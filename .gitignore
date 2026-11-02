@@ -13,3 +13,27 @@
 .externalNativeBuild
 .cxx
 local.properties
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*token.txt
+admin_token.txt
+
+# Databases and backups
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.bak
+
+# Logs
+*.log
