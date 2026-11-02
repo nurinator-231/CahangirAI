@@ -1,5 +1,5 @@
 /* sw.js — oflayn işləmə: bütün fayllar ilk açılışda keşlənir. */
-const VERSION = 'cahangir-v3.0';
+const VERSION = 'cahangir-v3.1';
 const SHELL = [
   './', 'index.html', 'css/style.css', 'manifest.webmanifest',
   'js/nlp.js', 'js/store.js', 'js/brain.js', 'js/llm.js', 'js/native_bridge.js', 'js/app.js',

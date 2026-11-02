@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="az">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#030814">
+<meta name="color-scheme" content="dark">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Cahangir">
+<title>Cahangir</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- Kilid (yalnız PIN təyin olunubsa) -->
+<div id="lock" class="overlay hide" role="dialog" aria-modal="true" aria-labelledby="lockTitle">
+  <div class="lockbox">
+    <div class="lockicon" aria-hidden="true">🔒</div>
+    <h2 id="lockTitle">Cahangir</h2>
+    <p id="lmsg">PIN kodunu daxil et.</p>
+    <input id="pin" type="password" inputmode="numeric" maxlength="8" autocomplete="off" aria-label="PIN">
+    <button class="btn primary" id="lgo" type="button">Aç</button>
+    <div id="lerr" class="err" role="alert"></div>
+  </div>
+</div>
+
+<!-- Xatırlatma çalır -->
+<div id="alarm" class="overlay alarm hide" role="alertdialog" aria-modal="true" aria-labelledby="alarmTitle">
+  <div class="alarmbox">
+    <div class="ring" aria-hidden="true">🔔</div>
+    <h2 id="alarmTitle">Xatırlatma</h2>
+    <div id="alarmList" class="alarmlist"></div>
+    <div class="alarmbtns">
+      <button class="btn primary big" id="aAck" type="button">✓ Oldu</button>
+      <button class="btn big" id="aSnooze" type="button">💤 10 dəq. sonra</button>
+    </div>
+    <button class="btn ghost" id="aStop" type="button">🔇 Səsi dayandır</button>
+  </div>
+</div>
+
+<!-- Düzəliş pəncərəsi -->
+<dialog id="dlg" aria-labelledby="dTitle">
+  <form method="dialog" id="dForm">
+    <h3 id="dTitle">Düzəliş</h3>
+    <label>Mətn<input id="dText" type="text" required maxlength="300"></label>
+    <div id="dTimeRow">
+      <label>Vaxt<input id="dWhen" type="datetime-local"></label>
+      <label>Təkrar
+        <select id="dRep">
+          <option value="">Təkrarlanmır</option>
+          <option value="daily">Hər gün</option>
+          <option value="weekly">Hər həftə</option>
+        </select>
+      </label>
+    </div>
+    <div class="dbtns">
+      <button class="btn" id="dCancel" type="button">Ləğv et</button>
+      <button class="btn primary" id="dSave" type="submit">Saxla</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" role="status" aria-live="polite"></div>
+
+<div class="app">
+  <nav class="side" aria-label="Əsas menyu">
+    <div class="logo"><svg viewBox="0 0 48 48" aria-hidden="true"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7fd0ff"/><stop offset="1" stop-color="#1b52ff"/></linearGradient></defs><path d="M35.5 14.5A15.5 15.5 0 1 0 35.5 33.5" fill="none" stroke="url(#lg)" stroke-width="7" stroke-linecap="round"/><circle cx="37" cy="24" r="3" fill="#fff" opacity=".9"/></svg><div><b>Cahangir</b><span>Sənin şəxsi köməkçin</span></div></div>
+    <button class="nav on" data-v="chat" type="button"><i aria-hidden="true">💬</i><span>Söhbət</span></button>
+    <button class="nav" data-v="rem" type="button"><i aria-hidden="true">🔔</i><span>Xatırlatmalar</span><em id="rc">0</em></button>
+    <button class="nav" data-v="mem" type="button"><i aria-hidden="true">🗄</i><span>Yaddaş</span></button>
+    <button class="nav" data-v="prj" type="button"><i aria-hidden="true">📁</i><span>Layihələr</span></button>
+    <button class="nav" data-v="set" type="button"><i aria-hidden="true">⚙️</i><span>Ayarlar</span></button>
+    <div class="pill"><span class="dot" id="od"></span><div><b id="ot">Oflayn rejim</b><br><small id="os"></small></div></div>
+  </nav>
+
+  <div class="main">
+    <header class="top">
+      <h1 id="clk">--:--</h1>
+      <div><b id="dt"></b><small id="dw"></small></div>
+      <div class="bar"></div>
+      <button class="iconbtn" id="lk" type="button" title="Kilidlə" aria-label="Kilidlə">🔒</button>
+    </header>
+
+    <main class="center">
+      <!-- SÖHBƏT -->
+      <section id="v-chat" class="view chatview">
+        <div id="hint" class="hint hide" role="button" tabindex="0">🔈 Səsli xatırlatmalar üçün ekrana bir dəfə toxun</div>
+        <div class="orbbox"><canvas id="orb" aria-hidden="true"></canvas><h2>Cahangir</h2><div id="stl" aria-live="polite">Hazır vəziyyətdə</div></div>
+        <div class="hero" id="hero" aria-label="Günün qısa görünüşü"></div>
+        <div class="tl" id="tl" aria-hidden="true"></div>
+        <div class="chat" id="chat" role="log" aria-live="polite" aria-label="Söhbət"></div>
+        <div class="chips" id="chips">
+          <button class="chip" data-fill="sabah saat 9-da  xatırlat" type="button">⏰ Sabah xatırlat</button>
+          <button class="chip" data-fill="30 dəqiqə sonra  xatırlat" type="button">⏳ Bir azdan xatırlat</button>
+          <button class="chip" data-fill="yadda saxla: " type="button">🧠 Yadda saxla</button>
+          <button class="chip" data-send="fokus" type="button">🎯 Fokus 25</button>
+          <button class="chip" data-send="10 dəqiqəlik taymer" type="button">⏱ 10 dəq. taymer</button>
+          <button class="chip" data-send="bu gün nə etdim" type="button">📊 Gün xülasəsi</button>
+          <button class="chip" data-send="bu gün nə var" type="button">📅 Bu gün nə var</button>
+          <button class="chip" data-send="kömək" type="button">❓ Nə edə bilirsən</button>
+        </div>
+      </section>
+
+      <!-- XATIRLATMALAR -->
+      <section id="v-rem" class="view listview hide">
+        <h2>Xatırlatmalar</h2>
+        <form class="addform" id="remForm" autocomplete="off">
+          <input id="remText" type="text" placeholder="Məs: sabah saat 9-da toplantı xatırlat" aria-label="Yeni xatırlatma">
+          <button class="btn primary" type="submit">Əlavə et</button>
+          <button class="btn" id="remAdv" type="button" title="Tarix və vaxtı əllə seç">📆</button>
+        </form>
+        <div id="remList"></div>
+      </section>
+
+      <!-- YADDAŞ -->
+      <section id="v-mem" class="view listview hide">
+        <h2>Yaddaş</h2>
+        <div class="card prof">
+          <label>Sənin adın<input id="profName" type="text" maxlength="40" placeholder="Adını yaz"></label>
+          <button class="btn primary" id="profSave" type="button">Saxla</button>
+        </div>
+        <form class="addform" id="memForm" autocomplete="off">
+          <input id="memText" type="text" placeholder="Cahangir bunu yadda saxlasın…" aria-label="Yeni qeyd">
+          <button class="btn primary" type="submit">Əlavə et</button>
+        </form>
+        <div id="memList"></div>
+      </section>
+
+      <!-- LAYİHƏLƏR -->
+      <section id="v-prj" class="view listview hide">
+        <h2>Layihələr və tapşırıqlar</h2>
+        <form class="addform" id="prjForm" autocomplete="off">
+          <input id="prjText" type="text" placeholder="Yeni layihə və ya tapşırıq…" aria-label="Yeni layihə">
+          <button class="btn primary" type="submit">Əlavə et</button>
+        </form>
+        <div id="prjList"></div>
+      </section>
+
+      <!-- AYARLAR -->
+      <section id="v-set" class="view listview hide">
+        <h2>Ayarlar</h2>
+
+        <div class="card sec">
+          <h3>🎨 Görünüş</h3>
+          <div class="swatches" id="swatches" role="radiogroup" aria-label="Rəng teması">
+            <button class="sw" type="button" data-theme="blue" style="--c:#3aa0ff" role="radio" aria-label="Mavi"></button>
+            <button class="sw" type="button" data-theme="violet" style="--c:#9b7bff" role="radio" aria-label="Bənövşəyi"></button>
+            <button class="sw" type="button" data-theme="green" style="--c:#2fe0a0" role="radio" aria-label="Yaşıl"></button>
+            <button class="sw" type="button" data-theme="amber" style="--c:#ffb454" role="radio" aria-label="Kəhrəba"></button>
+          </div>
+        </div>
+
+        <div class="card sec">
+          <h3>🔊 Səs</h3>
+          <label class="row"><span>Cavabları səslə oxu</span><input type="checkbox" id="sVoice"></label>
+          <label class="col">Səs
+            <select id="sVoiceSel"></select>
+          </label>
+          <div class="two">
+            <label class="col">Sürət <output id="sRateO">1.0</output><input type="range" id="sRate" min="0.6" max="1.6" step="0.1"></label>
+            <label class="col">Ton <output id="sPitchO">1.0</output><input type="range" id="sPitch" min="0.6" max="1.6" step="0.1"></label>
+          </div>
+          <button class="btn" id="sTest" type="button">▶ Səsi yoxla</button>
+          <p class="note" id="sVoiceNote"></p>
+        </div>
+
+        <div class="card sec">
+          <h3>🔔 Xatırlatmalar</h3>
+          <div class="two">
+            <label class="col">Neçə dəfə təkrar desin <output id="sRepO">4</output><input type="range" id="sRep" min="1" max="10" step="1"></label>
+            <label class="col">Təkrar fasiləsi (san.) <output id="sEveryO">25</output><input type="range" id="sEvery" min="10" max="90" step="5"></label>
+          </div>
+          <label class="row"><span>Ekranı oyaq saxla (xatırlatma qaçmasın)</span><input type="checkbox" id="sAwake"></label>
+          <label class="row"><span>Əllərsiz rejim (cavabdan sonra özü dinləsin)</span><input type="checkbox" id="sHands"></label>
+          <label class="col">Xatırlatma səsi
+            <select id="sSound"><option value="bell">Zəng</option><option value="chime">Zil (yumşaq)</option><option value="digital">Rəqəmsal</option></select>
+          </label>
+          <button class="btn" id="sSoundTest" type="button">▶ Zəngi yoxla</button>
+          <label class="row"><span>Sakit saatlar (söhbət cavabları səslənmir)</span><input type="checkbox" id="sQuiet"></label>
+          <div class="two">
+            <label class="col">Başlanğıc<input type="time" id="sQFrom"></label>
+            <label class="col">Son<input type="time" id="sQTo"></label>
+          </div>
+          <p class="note">Sakit saatlarda da xatırlatmalar çalır — yalnız adi söhbət cavabları səssiz olur.</p>
+          <button class="btn" id="sNotif" type="button">Bildirişlərə icazə ver</button>
+          <p class="note" id="sNotifNote"></p>
+        </div>
+
+        <div class="card sec">
+          <h3>🧠 Dil modeli (Gemma və s.)</h3>
+          <p class="note">Model olmadan da xatırlatma, yaddaş, taymer, hesablama işləyir. Ümumi suallara cavab üçün model qoş.</p>
+          <label class="col">Rejim
+            <select id="lMode">
+              <option value="off">Qoşulmayıb</option>
+              <option value="endpoint">Server (OpenAI-uyğun: llama.cpp, Ollama, LM Studio)</option>
+              <option value="device">Cihazda Gemma (WebGPU)</option>
+            </select>
+          </label>
+          <div id="lEndpoint" class="hide">
+            <label class="col">Ünvan<input id="lUrl" type="url" placeholder="http://localhost:8080/v1/chat/completions"></label>
+            <label class="col">Model adı (boş ola bilər)<input id="lModel" type="text" placeholder="gemma"></label>
+            <label class="col">Açar (tələb olunmursa boş burax)<input id="lKey" type="password" autocomplete="off"></label>
+            <button class="btn" id="lTest" type="button">Bağlantını yoxla</button>
+          </div>
+          <div id="lDevice" class="hide">
+            <p class="note" id="lDevNote"></p>
+            <label class="btn filebtn">Gemma modelini seç (.task / .litertlm)<input type="file" id="lFile" accept=".task,.litertlm,.bin" hidden></label>
+            <div class="prog hide" id="lProgBox"><div id="lProg"></div></div>
+            <div class="two"><button class="btn" id="lLoad" type="button">Modeli yüklə və yoxla</button><button class="btn ghost" id="lDel" type="button">Modeli sil</button></div>
+          </div>
+          <p class="note" id="lNote"></p>
+        </div>
+
+        <div class="card sec">
+          <h3>🔐 Təhlükəsizlik</h3>
+          <p class="note">PIN yalnız bu cihazda saxlanır. İstəyə bağlıdır — standart olaraq söndürülüb.</p>
+          <div class="two">
+            <input id="pinNew" type="password" inputmode="numeric" maxlength="8" placeholder="Yeni PIN (4–8 rəqəm)" aria-label="Yeni PIN">
+            <button class="btn" id="pinSet" type="button">PIN təyin et</button>
+          </div>
+          <button class="btn ghost hide" id="pinOff" type="button">PIN-i sil</button>
+        </div>
+
+        <div class="card sec">
+          <h3>🌐 Mərkəzi Debian Server (Tailscale)</h3>
+          <p class="note">Ev serveri (Debian 13, Intel Atom) ilə cihazlararası sinxronizasiya. Oflayn rejim həmişə müstəqil işləyir.</p>
+          <div class="two">
+            <label class="col">Server URL<input id="sSyncUrl" type="url" placeholder="http://100.x.y.z:8000"></label>
+            <label class="col">Admin Pairing Token<input id="sSyncToken" type="password" placeholder="Admin token"></label>
+          </div>
+          <div class="two">
+            <button class="btn primary" id="sSyncSave" type="button">🔗 Serverə Qoş</button>
+            <button class="btn" id="sSyncNow" type="button">🔄 İndi Sinxron Et</button>
+          </div>
+          <p class="note" id="sSyncStatus">Status: Oflayn / Lokal rejim</p>
+        </div>
+
+        <div class="card sec">
+          <h3>💾 Məlumat</h3>
+          <p class="note">Hər şey yalnız bu cihazda saxlanır. Telefon dəyişəndə ehtiyat nüsxə ilə köçür.</p>
+          <div class="two">
+            <button class="btn" id="dExport" type="button">⬇ Ehtiyat nüsxə</button>
+            <label class="btn filebtn">⬆ Bərpa et<input type="file" id="dImport" accept="application/json,.json" hidden></label>
+          </div>
+          <div class="two">
+            <button class="btn ghost" id="dClearChat" type="button">Söhbəti təmizlə</button>
+            <button class="btn danger" id="dReset" type="button">Hamısını sil</button>
+          </div>
+        </div>
+
+        <div class="card sec">
+          <h3>📲 Tətbiq</h3>
+          <p class="note" id="appNote"></p>
+          <button class="btn primary hide" id="installBtn" type="button">Telefona / kompüterə quraşdır</button>
+          <p class="note">Versiya <span id="appVer">3.0</span></p>
+        </div>
+      </section>
+
+      <!-- Yazı sahəsi (yalnız söhbət) -->
+      <form id="composer" class="input" autocomplete="off">
+        <button class="rb" id="mic" type="button" title="Danış" aria-label="Mikrofon">🎙</button>
+        <input id="tx" type="text" placeholder="Mesaj yazın və ya danışın…" aria-label="Mesaj" enterkeyhint="send">
+        <button class="rb snd" id="go" type="submit" aria-label="Göndər">➤</button>
+      </form>
+    </main>
+
+    <aside class="right">
+      <div class="card">
+        <h3>Status <span id="st" class="ok">● Hazır</span></h3>
+        <div class="row2">Model<b id="sm">Qaydalar mühərriki</b></div>
+        <div class="row2">Yaddaş<b id="sy">0 qeyd</b></div>
+        <div class="row2">Səs tanıma<b id="sr">—</b></div>
+        <div class="row2">Səsləndirmə<b id="ss">—</b></div>
+        <div class="row2">Rejim<b id="sx">—</b></div>
+      </div>
+      <div class="card">
+        <h3>Növbəti <button class="linkbtn" data-v="rem" type="button">Hamısı</button></h3>
+        <div id="today"></div>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<script src="js/nlp.js"></script>
+<script src="js/store.js"></script>
+<script src="js/brain.js"></script>
+<script src="js/llm.js"></script>
+<script src="js/native_bridge.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

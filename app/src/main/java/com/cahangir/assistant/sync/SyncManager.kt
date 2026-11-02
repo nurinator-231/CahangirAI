@@ -92,23 +92,20 @@ class SyncManager(private val context: Context) {
             return false
         }
 
+        // 1) Cavabı TAM parse et. Xəta olsa, bazaya heç nə yazılmır, pending qeydlər toxunulmaz qalır.
+        val serverTimestamp: Long
+        val deltaRem = mutableListOf<LocalReminder>()
+        val deltaMem = mutableListOf<LocalMemory>()
+        val deltaPrj = mutableListOf<LocalProject>()
         try {
             val respJson = JSONObject(responseStr)
-            val serverTimestamp = respJson.getLong("server_timestamp")
-
-            // Mark pushed records as synced
-            repository.reminderDao.markSynced(pendingReminders.map { it.id })
-            repository.memoryDao.markSynced(pendingMemories.map { it.id })
-            repository.projectDao.markSynced(pendingProjects.map { it.id })
-
-            // Apply pulled delta updates from server
+            serverTimestamp = respJson.getLong("server_timestamp")
             val delta = respJson.getJSONObject("delta")
 
-            val deltaRem = delta.optJSONArray("reminders")
-            if (deltaRem != null) {
-                for (i in 0 until deltaRem.length()) {
-                    val o = deltaRem.getJSONObject(i)
-                    val r = LocalReminder(
+            delta.optJSONArray("reminders")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    deltaRem.add(LocalReminder(
                         id = o.getString("id"),
                         userId = o.optString("user_id", "default"),
                         text = o.getString("text"),
@@ -121,16 +118,13 @@ class SyncManager(private val context: Context) {
                         updatedAt = o.getLong("updated_at"),
                         deleted = o.optInt("deleted", 0) == 1,
                         syncStatus = 0
-                    )
-                    repository.reminderDao.upsert(r, isPendingSync = false)
+                    ))
                 }
             }
-
-            val deltaMem = delta.optJSONArray("memories")
-            if (deltaMem != null) {
-                for (i in 0 until deltaMem.length()) {
-                    val o = deltaMem.getJSONObject(i)
-                    val m = LocalMemory(
+            delta.optJSONArray("memories")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    deltaMem.add(LocalMemory(
                         id = o.getString("id"),
                         userId = o.optString("user_id", "default"),
                         category = o.optString("category", "general"),
@@ -141,16 +135,13 @@ class SyncManager(private val context: Context) {
                         updatedAt = o.getLong("updated_at"),
                         deleted = o.optInt("deleted", 0) == 1,
                         syncStatus = 0
-                    )
-                    repository.memoryDao.upsert(m, isPendingSync = false)
+                    ))
                 }
             }
-
-            val deltaPrj = delta.optJSONArray("projects")
-            if (deltaPrj != null) {
-                for (i in 0 until deltaPrj.length()) {
-                    val o = deltaPrj.getJSONObject(i)
-                    val p = LocalProject(
+            delta.optJSONArray("projects")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    deltaPrj.add(LocalProject(
                         id = o.getString("id"),
                         userId = o.optString("user_id", "default"),
                         title = o.getString("title"),
@@ -160,16 +151,36 @@ class SyncManager(private val context: Context) {
                         updatedAt = o.getLong("updated_at"),
                         deleted = o.optInt("deleted", 0) == 1,
                         syncStatus = 0
-                    )
-                    repository.projectDao.upsert(p, isPendingSync = false)
+                    ))
                 }
             }
+        } catch (e: Exception) {
+            Log.e("SyncManager", "Failed to parse sync response; nothing was changed locally", e)
+            return false
+        }
 
+        // 2) Hamısını BİR tranzaksiyada yaz: pending işarələmə + LWW ilə delta.
+        try {
+            val changed = repository.inTransaction {
+                var n = 0
+                // Yalnız göndərilən andan bəri dəyişməyənlər synced olur
+                repository.reminderDao.markSyncedIfUnchanged(pendingReminders)
+                repository.memoryDao.markSyncedIfUnchanged(pendingMemories)
+                repository.projectDao.markSyncedIfUnchanged(pendingProjects)
+
+                for (r in deltaRem) if (repository.reminderDao.upsertFromServer(r)) n++
+                for (m in deltaMem) if (repository.memoryDao.upsertFromServer(m)) n++
+                for (p in deltaPrj) if (repository.projectDao.upsertFromServer(p)) n++
+                n
+            }
+
+            // Zaman damğası yalnız uğurlu yazıdan SONRA yenilənir
             securityManager.lastSyncTimestamp = serverTimestamp
-            Log.i("SyncManager", "Sync successfully completed at server time $serverTimestamp")
+            if (changed > 0) repository.onSyncApplied() // UI yenilə + alarmları yenidən planlaşdır
+            Log.i("SyncManager", "Sync completed at server time $serverTimestamp (applied $changed server changes)")
             return true
         } catch (e: Exception) {
-            Log.e("SyncManager", "Failed to parse sync response", e)
+            Log.e("SyncManager", "Failed to apply sync response; transaction rolled back", e)
             return false
         }
     }

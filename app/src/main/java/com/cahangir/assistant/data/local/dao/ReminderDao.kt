@@ -135,6 +135,40 @@ class ReminderDao(private val dbHelper: CahangirDbHelper) {
         }
     }
 
+    fun getById(id: String): LocalReminder? {
+        val db = dbHelper.readableDatabase
+        return db.rawQuery("SELECT * FROM reminders WHERE id = ?;", arrayOf(id)).use { c ->
+            if (c.moveToFirst()) cursorToReminder(c) else null
+        }
+    }
+
+    /** Yalnız göndərilən andan bəri dəyişməyibsə synced işarələ (sorğu zamanı edilən redaktə itməsin). */
+    fun markSyncedIfUnchanged(pushed: List<LocalReminder>) {
+        if (pushed.isEmpty()) return
+        val db = dbHelper.writableDatabase
+        db.beginTransaction()
+        try {
+            val values = ContentValues().apply { put("sync_status", 0) }
+            for (item in pushed) {
+                db.update("reminders", values, "id = ? AND updated_at = ?", arrayOf(item.id, item.updatedAt.toString()))
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    /** Serverdən gələn qeydi LWW qaydası ilə yaz. Yazılıbsa true qaytarır. */
+    fun upsertFromServer(item: LocalReminder): Boolean {
+        val local = getById(item.id)
+        val ok = com.cahangir.assistant.sync.SyncRules.shouldApplyServerItem(
+            local?.updatedAt, local?.syncStatus == 1, item.updatedAt
+        )
+        if (!ok) return false
+        upsert(item, isPendingSync = false)
+        return true
+    }
+
     private fun cursorToReminder(c: android.database.Cursor): LocalReminder {
         val dueIdx = c.getColumnIndexOrThrow("due")
         val snoozeIdx = c.getColumnIndexOrThrow("snooze")

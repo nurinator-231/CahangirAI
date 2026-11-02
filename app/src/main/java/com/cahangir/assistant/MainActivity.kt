@@ -23,6 +23,7 @@ import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
@@ -132,7 +133,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        // Tünd fon üçün status/naviqasiya ikonları HƏMİŞƏ açıq rəngdə (sistem işıqlı rejimdə olsa belə)
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT)
+        )
 
         window.decorView.setBackgroundColor(Color.parseColor("#030814"))
 
@@ -165,9 +170,24 @@ class MainActivity : ComponentActivity() {
             setBackgroundColor(Color.parseColor("#030814"))
         }
 
+        // Insets-in TƏK mənbəyi: native padding (status bar + cutout + klaviatura).
+        // index.html-də viewport-fit=cover çıxarılıb, ona görə CSS env() ikiqat boşluq yaratmır.
         ViewCompat.setOnApplyWindowInsetsListener(webView) { view, windowInsets ->
-            val insets = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars())
-            view.setPadding(insets.left, insets.top, insets.right, insets.bottom)
+            val bars = windowInsets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+            )
+            val ime = windowInsets.getInsets(WindowInsetsCompat.Type.ime())
+
+            val density = view.resources.displayMetrics.density
+            val topPx = (bars.top / density).toInt()
+            val bottomPx = (Math.max(bars.bottom, ime.bottom) / density).toInt()
+
+            webView.evaluateJavascript(
+                "document.documentElement.style.setProperty('--sat', '${topPx}px'); " +
+                "document.documentElement.style.setProperty('--sab', '${bottomPx}px');",
+                null
+            )
+            view.setPadding(0, 0, 0, 0)
             WindowInsetsCompat.CONSUMED
         }
 

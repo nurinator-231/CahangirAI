@@ -170,6 +170,18 @@
         }
         syncStoreToAndroid();
 
+        // Ensure input field is visible when focused (keyboard open)
+        const txInput = document.getElementById('tx');
+        if (txInput) {
+          txInput.addEventListener('focus', function() {
+            setTimeout(function() {
+              txInput.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+              const chat = document.getElementById('chat');
+              if (chat) chat.scrollTop = chat.scrollHeight;
+            }, 300);
+          });
+        }
+
         // Hook Backup Buttons to SAF
         const dExportBtn = document.getElementById('dExport');
         if (dExportBtn && root.CahangirBridge) {

@@ -100,6 +100,40 @@ class MemoryDao(private val dbHelper: CahangirDbHelper) {
         }
     }
 
+    fun getById(id: String): LocalMemory? {
+        val db = dbHelper.readableDatabase
+        return db.rawQuery("SELECT * FROM memories WHERE id = ?;", arrayOf(id)).use { c ->
+            if (c.moveToFirst()) cursorToMemory(c) else null
+        }
+    }
+
+    /** Yalnız göndərilən andan bəri dəyişməyibsə synced işarələ (sorğu zamanı edilən redaktə itməsin). */
+    fun markSyncedIfUnchanged(pushed: List<LocalMemory>) {
+        if (pushed.isEmpty()) return
+        val db = dbHelper.writableDatabase
+        db.beginTransaction()
+        try {
+            val values = ContentValues().apply { put("sync_status", 0) }
+            for (item in pushed) {
+                db.update("memories", values, "id = ? AND updated_at = ?", arrayOf(item.id, item.updatedAt.toString()))
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    /** Serverdən gələn qeydi LWW qaydası ilə yaz. Yazılıbsa true qaytarır. */
+    fun upsertFromServer(item: LocalMemory): Boolean {
+        val local = getById(item.id)
+        val ok = com.cahangir.assistant.sync.SyncRules.shouldApplyServerItem(
+            local?.updatedAt, local?.syncStatus == 1, item.updatedAt
+        )
+        if (!ok) return false
+        upsert(item, isPendingSync = false)
+        return true
+    }
+
     private fun cursorToMemory(c: android.database.Cursor): LocalMemory {
         return LocalMemory(
             id = c.getString(c.getColumnIndexOrThrow("id")),

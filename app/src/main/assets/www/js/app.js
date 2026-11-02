@@ -714,3 +714,11 @@
   window.__cg = { store, handleUser, tick, firing, env, fire, ackAll, go, speak };
   init();
 })();
+
+// Klaviatura açılanda fokuslanan sahə həmişə görünsün (native IME padding WebView-u kiçildir)
+document.addEventListener('focusin', (e) => {
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) {
+    setTimeout(() => { try { t.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (_) {} }, 320);
+  }
+});

@@ -22,6 +22,22 @@ class CahangirRepository(private val context: Context) {
         listeners.remove(listener)
     }
 
+    /** Sinxronizasiyadan sonra UI-ni yenilə və həyəcan siqnallarını yenidən planlaşdır. */
+    fun onSyncApplied() = notifyDataChanged()
+
+    /** Bir neçə DAO əməliyyatını vahid tranzaksiyada icra et. */
+    fun <T> inTransaction(block: () -> T): T {
+        val db = dbHelper.writableDatabase
+        db.beginTransaction()
+        try {
+            val result = block()
+            db.setTransactionSuccessful()
+            return result
+        } finally {
+            db.endTransaction()
+        }
+    }
+
     private fun notifyDataChanged() {
         for (l in listeners) {
             try { l.invoke() } catch (_: Exception) {}
