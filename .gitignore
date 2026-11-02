@@ -1,39 +1,126 @@
+# ==========================================
+# Android & Gradle
+# ==========================================
 *.iml
-.gradle
-/local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
-.DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
+.gradle/
+build/
+*/build/
+app/build/
+captures/
+.externalNativeBuild/
+.cxx/
 local.properties
-# Python
+.kotlin/
+*.apk
+*.aab
+
+# Android Studio / IntelliJ IDEA
+.idea/caches/
+.idea/libraries/
+.idea/modules.xml
+.idea/workspace.xml
+.idea/navEditor.xml
+.idea/assetWizardSettings.xml
+.idea/shelf/
+*.ipr
+*.iws
+
+# ==========================================
+# Desktop (Node, Vite, React & Tauri Rust)
+# ==========================================
+# Node / Vite dependencies and build outputs
+node_modules/
+*/node_modules/
+desktop/node_modules/
+dist/
+*/dist/
+desktop/dist/
+dist-ssr/
+*.local
+
+# Rust & Tauri build artifacts
+target/
+*/target/
+desktop/src-tauri/target/
+*.pdb
+*.exe
+*.dll
+*.so
+*.dylib
+*.rlib
+
+# Tauri generated / cache files
+desktop/src-tauri/gen/schemas/
+desktop/src-tauri/WixTools/
+
+# Desktop logs and temp
+desktop/build_log.txt
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ==========================================
+# Python & Backend (FastAPI)
+# ==========================================
 __pycache__/
 *.py[cod]
+*$py.class
 *.pyo
 .pytest_cache/
 .venv/
 venv/
+ENV/
+env/
+.mypy_cache/
+.ruff_cache/
 
-# Environment and secrets
+# ==========================================
+# Environment, Tokens & Secrets
+# ==========================================
 .env
 .env.*
 !.env.example
 *token.txt
 admin_token.txt
+device_token.txt
+*.keystore
+*.jks
 
-# Databases and backups
+# ==========================================
+# Databases & Local Storage Backups
+# ==========================================
 *.db
 *.sqlite
 *.sqlite3
 *.db-journal
+*.db-wal
+*.db-shm
 *.bak
+cahangir.db*
+cahangir_local.db*
+cahangir_desktop.db*
 
+# ==========================================
+# Temporary folders & Patches
+# ==========================================
+patch_extracted/
+tmp/
+temp/
+
+# ==========================================
+# OS Generated Files
+# ==========================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ==========================================
 # Logs
+# ==========================================
 *.log
