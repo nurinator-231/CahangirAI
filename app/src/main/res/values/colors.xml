@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="cahangir_bg">#030814</color>
+    <color name="cahangir_primary">#3aa0ff</color>
+    <color name="cahangir_accent">#7fd0ff</color>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+</resources>

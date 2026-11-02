@@ -1,0 +1,24 @@
+[Unit]
+Description=Cahangir AI Central Memory & Synchronization Backend
+After=network.target tailscaled.service
+Wants=tailscaled.service
+
+[Service]
+Type=simple
+User=debian
+WorkingDirectory=/opt/cahangir-backend
+ExecStart=/opt/cahangir-backend/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=CAHANGIR_HOST=0.0.0.0
+Environment=CAHANGIR_PORT=8000
+
+# Low-resource safeguards for Intel Atom D525 (4GB RAM)
+MemoryMax=300M
+CPUQuota=100%
+ProtectSystem=full
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

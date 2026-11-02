@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Glowing orbital ellipse -->
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:rotation="-25">
+        <path
+            android:pathData="M 18,54 A 36,15 0 1,0 90,54 A 36,15 0 1,0 18,54"
+            android:strokeColor="#603aa0ff"
+            android:strokeWidth="1.5"
+            android:fillColor="#00000000" />
+    </group>
+
+    <!-- Glowing Crescent Ring -->
+    <path
+        android:pathData="M 68,36 A 25,25 0 1,0 68,72"
+        android:strokeWidth="8"
+        android:strokeLineCap="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:startX="29"
+                android:startY="29"
+                android:endX="79"
+                android:endY="79"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#7fd0ff" />
+                <item android:offset="1.0" android:color="#1b52ff" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Glowing Orb Center Point -->
+    <path
+        android:pathData="M 70,54 A 3.5,3.5 0 1,0 77,54 A 3.5,3.5 0 1,0 70,54"
+        android:fillColor="#E6FFFFFF" />
+</vector>
