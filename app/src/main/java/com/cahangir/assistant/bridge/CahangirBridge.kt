@@ -1,6 +1,8 @@
 package com.cahangir.assistant.bridge
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.os.Build
 import android.os.Handler
@@ -18,28 +20,40 @@ import com.cahangir.assistant.data.local.dao.LocalMemory
 import com.cahangir.assistant.data.local.dao.LocalProject
 import com.cahangir.assistant.data.local.dao.LocalReminder
 import com.cahangir.assistant.data.local.repository.CahangirRepository
+import com.cahangir.assistant.devices.DeviceManager
+import com.cahangir.assistant.p2p.P2pClient
+import com.cahangir.assistant.p2p.P2pServer
+import com.cahangir.assistant.p2p.P2pTransferStorage
 import com.cahangir.assistant.security.SecurityManager
 import com.cahangir.assistant.stt.SpeechRecognitionManager
 import com.cahangir.assistant.sync.SyncApiClient
 import com.cahangir.assistant.sync.SyncManager
+import com.cahangir.assistant.sysinfo.SystemMetricsManager
 import com.cahangir.assistant.tts.TextToSpeechEngine
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.Executors
 
 class CahangirBridge(
     private val activity: Activity,
     private val webView: WebView,
     private val ttsEngine: TextToSpeechEngine,
     private val sttManager: SpeechRecognitionManager,
+    private val p2pServer: P2pServer,
+    private val p2pClient: P2pClient,
+    private val metricsManager: SystemMetricsManager,
     private val onRequestAudioPermission: () -> Unit,
     private val onRequestCalendarPermission: (title: String, timeMillis: Long) -> Unit,
     private val onExportBackup: (jsonContent: String) -> Unit,
-    private val onImportBackup: () -> Unit
+    private val onImportBackup: () -> Unit,
+    private val onPickAndSendFile: (peerIp: String, peerPort: Int) -> Unit
 ) {
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val asyncExecutor = Executors.newCachedThreadPool()
     private val repository = CahangirRepository(activity)
     private val securityManager = SecurityManager(activity)
+    private val transferStorage = P2pTransferStorage(activity)
 
     // --- 1. Səs (TTS) ---
     @JavascriptInterface
@@ -141,18 +155,16 @@ class CahangirBridge(
                 }
             }
 
-            // Trigger background sync if server is paired
             if (securityManager.isConfigured) {
                 SyncManager.enqueueImmediateSync(activity)
             }
         } catch (e: Exception) {
-            Log.e("CahangirBridge", "Failed to sync full store to Room/SQLite", e)
+            Log.e("CahangirBridge", "Failed to sync full store", e)
         }
     }
 
     @JavascriptInterface
     fun syncReminders(payloadJson: String) {
-        // Compatibility with earlier native bridge
         syncFullStore(payloadJson)
     }
 
@@ -169,6 +181,7 @@ class CahangirBridge(
 
         return if (success) {
             securityManager.serverUrl = cleanUrl
+            securityManager.adminToken = adminToken.trim()
             securityManager.deviceToken = tokenOrErr
             SyncManager.enqueueImmediateSync(activity)
             JSONObject().apply {
@@ -189,6 +202,7 @@ class CahangirBridge(
         return JSONObject().apply {
             put("isConfigured", securityManager.isConfigured)
             put("serverUrl", securityManager.serverUrl)
+            put("adminToken", securityManager.adminToken)
             put("deviceId", securityManager.deviceId)
             put("deviceName", securityManager.deviceName)
             put("lastSync", securityManager.lastSyncTimestamp)
@@ -205,7 +219,153 @@ class CahangirBridge(
         }
     }
 
-    // --- 5. Təqvim & SAF Fayl Əməliyyatları ---
+    // --- 5. P2P Server & Fayl Ötürmə (File Transfer) ---
+    @JavascriptInterface
+    fun getP2pServerStatus(): String {
+        val ips = P2pServer.getNetworkIps()
+        val ipsArr = JSONArray()
+        ips.forEach { ipsArr.put(it) }
+
+        return JSONObject().apply {
+            put("isRunning", p2pServer.isServerRunning())
+            put("port", 8767)
+            put("ips", ipsArr)
+            put("deviceId", securityManager.deviceId)
+            put("deviceName", securityManager.deviceName)
+        }.toString()
+    }
+
+    @JavascriptInterface
+    fun pickAndSendFile(peerIp: String, peerPort: Int) {
+        mainHandler.post {
+            onPickAndSendFile(peerIp, if (peerPort > 0) peerPort else 8767)
+        }
+    }
+
+    @JavascriptInterface
+    fun cancelFileTransfer() {
+        p2pClient.cancelTransfer()
+    }
+
+    @JavascriptInterface
+    fun getTransferHistory(): String {
+        val list = transferStorage.getTransfers()
+        val arr = JSONArray()
+        list.forEach { arr.put(it.toJsonObject()) }
+        return arr.toString()
+    }
+
+    @JavascriptInterface
+    fun clearTransferHistory() {
+        transferStorage.clearTransfers()
+    }
+
+    // --- 6. Pano Sinxronizasiyası (Universal Clipboard) ---
+    @JavascriptInterface
+    fun sendClipboardToPeer(peerIp: String, peerPort: Int, text: String): String {
+        val port = if (peerPort > 0) peerPort else 8767
+        return try {
+            val res = p2pClient.sendClipboard(peerIp, port, text)
+            if (res.isSuccess) {
+                JSONObject().apply {
+                    put("success", true)
+                    put("message", res.getOrNull())
+                }.toString()
+            } else {
+                JSONObject().apply {
+                    put("success", false)
+                    put("error", res.exceptionOrNull()?.message ?: "Xəta baş verdi")
+                }.toString()
+            }
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("success", false)
+                put("error", e.message)
+            }.toString()
+        }
+    }
+
+    @JavascriptInterface
+    fun getSystemClipboard(): String {
+        return try {
+            val cm = activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val clip = cm.primaryClip
+            if (clip != null && clip.itemCount > 0) {
+                clip.getItemAt(0).coerceToText(activity).toString()
+            } else ""
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    @JavascriptInterface
+    fun copyToClipboard(text: String) {
+        mainHandler.post {
+            try {
+                val cm = activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                val clip = ClipData.newPlainText("Cahangir", text)
+                cm.setPrimaryClip(clip)
+                showToast("✓ Panoya kopyalandı")
+            } catch (e: Exception) {
+                Log.w("CahangirBridge", "Failed to copy", e)
+            }
+        }
+    }
+
+    // --- 7. Cihazlar (Devices & Connect) ---
+    @JavascriptInterface
+    fun listPairedDevices(serverUrl: String, adminToken: String): String {
+        val sUrl = if (serverUrl.isNotBlank()) serverUrl else securityManager.serverUrl
+        val aTok = if (adminToken.isNotBlank()) adminToken.trim() else securityManager.adminToken
+        if (sUrl.isBlank()) {
+            return JSONObject().apply {
+                put("success", false)
+                put("error", "Server ünvanı təyin olunmayıb")
+            }.toString()
+        }
+
+        val res = DeviceManager.listDevices(sUrl, aTok)
+        return if (res.isSuccess) {
+            JSONObject().apply {
+                put("success", true)
+                put("devices", res.getOrNull())
+            }.toString()
+        } else {
+            JSONObject().apply {
+                put("success", false)
+                put("error", res.exceptionOrNull()?.message ?: "Cihazlar alına bilmədi")
+            }.toString()
+        }
+    }
+
+    @JavascriptInterface
+    fun revokePairedDevice(serverUrl: String, adminToken: String, deviceId: String): String {
+        val sUrl = if (serverUrl.isNotBlank()) serverUrl else securityManager.serverUrl
+        val aTok = if (adminToken.isNotBlank()) adminToken.trim() else securityManager.adminToken
+        val res = DeviceManager.revokeDevice(sUrl, aTok, deviceId)
+        return if (res.isSuccess) {
+            JSONObject().apply {
+                put("success", true)
+            }.toString()
+        } else {
+            JSONObject().apply {
+                put("success", false)
+                put("error", res.exceptionOrNull()?.message ?: "Ləğv edilmədi")
+            }.toString()
+        }
+    }
+
+    // --- 8. Sistem Monitorinqi (System Metrics) ---
+    @JavascriptInterface
+    fun getSystemMetrics(): String {
+        return try {
+            metricsManager.collectMetrics().toString()
+        } catch (e: Exception) {
+            JSONObject().apply { put("error", e.message) }.toString()
+        }
+    }
+
+    // --- 9. Təqvim & SAF Fayl Əməliyyatları ---
     @JavascriptInterface
     fun exportToCalendar(title: String, timeMillis: Long) {
         mainHandler.post {
@@ -232,7 +392,7 @@ class CahangirBridge(
         }
     }
 
-    // --- 6. Digər köməkçilər ---
+    // --- 10. Köməkçilər ---
     @JavascriptInterface
     fun setKeepScreenOn(keepAwake: Boolean) {
         mainHandler.post {
@@ -279,7 +439,7 @@ class CahangirBridge(
     @JavascriptInterface
     fun isNativeReady(): Boolean = true
 
-    private fun evaluateJs(script: String) {
+    fun evaluateJs(script: String) {
         mainHandler.post {
             webView.evaluateJavascript(script, null)
         }

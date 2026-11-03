@@ -35,6 +35,10 @@ class SecurityManager(context: Context) {
         get() = prefs.getString("server_url", "") ?: ""
         set(value) = prefs.edit().putString("server_url", value.trim().trimEnd('/')).apply()
 
+    var adminToken: String
+        get() = prefs.getString("admin_token", "") ?: ""
+        set(value) = prefs.edit().putString("admin_token", value.trim()).apply()
+
     var deviceToken: String
         get() = prefs.getString("device_token", "") ?: ""
         set(value) = prefs.edit().putString("device_token", value.trim()).apply()
@@ -65,6 +69,7 @@ class SecurityManager(context: Context) {
     fun clearCredentials() {
         prefs.edit()
             .remove("server_url")
+            .remove("admin_token")
             .remove("device_token")
             .remove("last_sync_timestamp")
             .apply()

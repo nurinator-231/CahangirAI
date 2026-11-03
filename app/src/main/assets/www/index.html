@@ -69,10 +69,15 @@
 <div class="app">
   <nav class="side" aria-label="Əsas menyu">
     <div class="logo"><svg viewBox="0 0 48 48" aria-hidden="true"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7fd0ff"/><stop offset="1" stop-color="#1b52ff"/></linearGradient></defs><path d="M35.5 14.5A15.5 15.5 0 1 0 35.5 33.5" fill="none" stroke="url(#lg)" stroke-width="7" stroke-linecap="round"/><circle cx="37" cy="24" r="3" fill="#fff" opacity=".9"/></svg><div><b>Cahangir</b><span>Sənin şəxsi köməkçin</span></div></div>
+    <button class="nav" data-v="dash" type="button"><i aria-hidden="true">📊</i><span>İcmal</span></button>
     <button class="nav on" data-v="chat" type="button"><i aria-hidden="true">💬</i><span>Söhbət</span></button>
+    <button class="nav" data-v="ftr" type="button"><i aria-hidden="true">🔄</i><span>Fayllar</span></button>
+    <button class="nav" data-v="clip" type="button"><i aria-hidden="true">📋</i><span>Pano</span></button>
+    <button class="nav" data-v="conn" type="button"><i aria-hidden="true">📱</i><span>Cihazlar</span></button>
     <button class="nav" data-v="rem" type="button"><i aria-hidden="true">🔔</i><span>Xatırlatmalar</span><em id="rc">0</em></button>
     <button class="nav" data-v="mem" type="button"><i aria-hidden="true">🗄</i><span>Yaddaş</span></button>
     <button class="nav" data-v="prj" type="button"><i aria-hidden="true">📁</i><span>Layihələr</span></button>
+    <button class="nav" data-v="sys" type="button"><i aria-hidden="true">📈</i><span>Sistem</span></button>
     <button class="nav" data-v="set" type="button"><i aria-hidden="true">⚙️</i><span>Ayarlar</span></button>
     <div class="pill"><span class="dot" id="od"></span><div><b id="ot">Oflayn rejim</b><br><small id="os"></small></div></div>
   </nav>
@@ -86,6 +91,53 @@
     </header>
 
     <main class="center">
+      <!-- İDARƏETMƏ PANELİ (DASHBOARD) -->
+      <section id="v-dash" class="view listview hide">
+        <h2>İdarəetmə Paneli</h2>
+        <div class="dash-grid">
+          <div class="dash-card">
+            <div class="dc-icon">🔔</div>
+            <div class="dc-info"><b id="dRemCount">0</b><span>Aktiv Xatırlatma</span></div>
+          </div>
+          <div class="dash-card">
+            <div class="dc-icon">🧠</div>
+            <div class="dc-info"><b id="dMemCount">0</b><span>Yaddaş Qeydi</span></div>
+          </div>
+          <div class="dash-card">
+            <div class="dc-icon">📁</div>
+            <div class="dc-info"><b id="dPrjCount">0</b><span>Layihə & Tapşırıq</span></div>
+          </div>
+          <div class="dash-card">
+            <div class="dc-icon">📱</div>
+            <div class="dc-info"><b id="dDevCount">0</b><span>Qoşulu Cihaz</span></div>
+          </div>
+        </div>
+
+        <div class="card sec">
+          <h3>🌐 Server & Şəbəkə Statusu</h3>
+          <div class="row2">Debian Server<b id="dServerStatus">Yoxlanılır...</b></div>
+          <div class="row2">Server Gecikməsi (Ping)<b id="dServerLatency">—</b></div>
+          <div class="row2">P2P Server (Port 8767)<b id="dP2pStatus" class="ok">● Aktiv</b></div>
+          <div class="row2">Tailscale IP (Mesh)<b id="dTailscaleIp">—</b></div>
+          <div class="row2">Lokal Wi-Fi IP<b id="dLocalIp">—</b></div>
+        </div>
+
+        <div class="card sec">
+          <h3>⚡ Cihazın Vəziyyəti</h3>
+          <div class="row2">Batareya<b id="dBattery">—</b></div>
+          <div class="row2">Operativ Yaddaş (RAM)<b id="dRam">—</b></div>
+          <div class="row2">Daxili Yaddaş (Storage)<b id="dStorage">—</b></div>
+        </div>
+
+        <div class="card sec">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <h3 style="margin:0;">📥 Son Fayl Köçürmələri</h3>
+            <button class="btn ghost small" id="dGoFtrBtn" type="button">Hamısı</button>
+          </div>
+          <div id="dRecentTransfers" class="sublist" style="margin-top:8px;">Heç bir fayl ötürülməyib</div>
+        </div>
+      </section>
+
       <!-- SÖHBƏT -->
       <section id="v-chat" class="view chatview">
         <div id="hint" class="hint hide" role="button" tabindex="0">🔈 Səsli xatırlatmalar üçün ekrana bir dəfə toxun</div>
@@ -138,6 +190,113 @@
           <button class="btn primary" type="submit">Əlavə et</button>
         </form>
         <div id="prjList"></div>
+      </section>
+
+      <!-- P2P FAYL ÖTÜRMƏ -->
+      <section id="v-ftr" class="view listview hide">
+        <h2>📁 P2P Fayl Ötürmə</h2>
+        <p class="note">Tailscale və ya ev Wi-Fi şəbəkəsi üzərindən kompüterlə birbaşa şifrəli fayl mübadiləsi.</p>
+
+        <div class="card sec">
+          <h3>📤 Qarşı Cihaza Fayl Göndər</h3>
+          <label class="col">Qarşı Tərəfin IP Ünvanı
+            <input id="ftrPeerIp" type="text" placeholder="Məs: 100.114.91.32">
+          </label>
+          <div class="two">
+            <label class="col">Port
+              <input id="ftrPeerPort" type="number" value="8767">
+            </label>
+            <div class="col" style="justify-content:flex-end;">
+              <button class="btn primary" id="ftrPickBtn" type="button" style="height:42px;">📁 Fayl Seç və Göndər</button>
+            </div>
+          </div>
+
+          <div id="ftrProgBox" class="prog-box hide" style="margin-top:14px;">
+            <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:4px;">
+              <span id="ftrStatusText">Göndərilir...</span>
+              <span id="ftrPercentText">0%</span>
+            </div>
+            <div class="progress-bar-bg">
+              <div id="ftrProgressBar" class="progress-bar-fill" style="width:0%;"></div>
+            </div>
+            <div style="display:flex; justify-content:space-between; font-size:11px; color:#8899bb; margin-top:4px;">
+              <span id="ftrSpeedText">0.00 MB/s</span>
+              <span id="ftrBytesText">0 / 0 MB</span>
+            </div>
+            <button class="btn danger small" id="ftrCancelBtn" type="button" style="margin-top:8px;">Dayandır</button>
+          </div>
+        </div>
+
+        <div class="card sec">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <h3 style="margin:0;">📜 Ötürmə Tarixçəsi</h3>
+            <button class="btn ghost small" id="ftrClearBtn" type="button">Təmizlə</button>
+          </div>
+          <div id="ftrList" class="sublist" style="margin-top:10px;">Fayl ötürmə tarixçəsi boşdur.</div>
+        </div>
+      </section>
+
+      <!-- PANO SİNXRONİZASİYASI -->
+      <section id="v-clip" class="view listview hide">
+        <h2>📋 Pano Sinxronizasiyası</h2>
+        <p class="note">Kompüter və telefon arasında mətni kopyalayıb dərhal qarşı cihaza ötürün.</p>
+
+        <div class="card sec">
+          <h3>📤 Qarşı Cihaza Pano Göndər</h3>
+          <label class="col">Hədəf Cihazın IP-si
+            <input id="clipPeerIp" type="text" placeholder="Məs: 100.114.91.32">
+          </label>
+          <label class="col">Göndəriləcək Mətn
+            <textarea id="clipText" rows="3" placeholder="Mətni bura yazın və ya panodan yapışdırın..."></textarea>
+          </label>
+          <div class="two">
+            <button class="btn" id="clipPasteBtn" type="button">📋 Panodan Oxu</button>
+            <button class="btn primary" id="clipSendBtn" type="button">➤ Cihaza Göndər</button>
+          </div>
+          <p id="clipSendStatus" class="note"></p>
+        </div>
+
+        <div class="card sec">
+          <h3>📜 Pano Tarixçəsi</h3>
+          <div id="clipList" class="sublist">Pano tarixçəsi boşdur.</div>
+        </div>
+      </section>
+
+      <!-- QOŞULMUŞ CİHAZLAR -->
+      <section id="v-conn" class="view listview hide">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <h2 style="margin:0;">📱 Qoşulmuş Cihazlar</h2>
+          <button class="btn small" id="connRefreshBtn" type="button">🔄 Yenilə</button>
+        </div>
+        <p class="note">Debian serverə və ya şəbəkəyə qoşulmuş cihazlar.</p>
+        <div id="connDeviceList" class="sublist" style="margin-top:12px;">Cihazlar yüklənir...</div>
+      </section>
+
+      <!-- SİSTEM MONİTORU -->
+      <section id="v-sys" class="view listview hide">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <h2 style="margin:0;">📈 Sistem Monitoru</h2>
+          <button class="btn small" id="sysRefreshBtn" type="button">🔄 Yenilə</button>
+        </div>
+        <p class="note">Bu telefon və mərkəzi Debian serverin canlı texniki parametrləri.</p>
+
+        <div class="card sec">
+          <h3>📱 Bu Telefon (Galaxy S25)</h3>
+          <div class="row2">Model<b id="sysDeviceName">—</b></div>
+          <div class="row2">Batareya<b id="sysBattery">—</b></div>
+          <div class="row2">RAM İstifadəsi<b id="sysRam">—</b></div>
+          <div class="row2">Daxili Yaddaş<b id="sysStorage">—</b></div>
+          <div class="row2">Tailscale IP (Mesh)<b id="sysTailscale">—</b></div>
+          <div class="row2">Lokal Wi-Fi IP<b id="sysLocalIp">—</b></div>
+          <div class="row2">P2P Server Vəziyyəti<b class="ok">Port 8767 (Aktiv)</b></div>
+        </div>
+
+        <div class="card sec">
+          <h3>🖥 Mərkəzi Debian Server</h3>
+          <div class="row2">Server Vəziyyəti<b id="sysServerStatus">—</b></div>
+          <div class="row2">Gecikmə (Ping)<b id="sysServerPing">—</b></div>
+          <div class="row2">Server URL<b id="sysServerUrl">—</b></div>
+        </div>
       </section>
 
       <!-- AYARLAR -->

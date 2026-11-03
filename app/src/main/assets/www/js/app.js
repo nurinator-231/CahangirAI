@@ -45,10 +45,18 @@
   }
 
   /* ================= naviqasiya ================= */
+  const ALL_VIEWS = ['dash', 'chat', 'ftr', 'clip', 'conn', 'rem', 'mem', 'prj', 'sys', 'set'];
   function go(v) {
     S.view = v;
-    document.querySelectorAll('.nav[data-v]').forEach(b => { b.classList.toggle('on', b.dataset.v === v); if (b.classList.contains('on')) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
-    ['chat', 'rem', 'mem', 'prj', 'set'].forEach(k => $('v-' + k).classList.toggle('hide', k !== v));
+    document.querySelectorAll('.nav[data-v]').forEach(b => {
+      b.classList.toggle('on', b.dataset.v === v);
+      if (b.classList.contains('on')) b.setAttribute('aria-current', 'page');
+      else b.removeAttribute('aria-current');
+    });
+    ALL_VIEWS.forEach(k => {
+      const el = $('v-' + k);
+      if (el) el.classList.toggle('hide', k !== v);
+    });
     $('composer').classList.toggle('hide', v !== 'chat');
     renderAll();
     if (v === 'chat') { const c = $('chat'); c.scrollTop = c.scrollHeight; }
@@ -191,7 +199,19 @@
     $('sm').textContent = m === 'endpoint' ? 'LLM serveri' : m === 'device' ? 'Gemma (cihazda)' : 'Qaydalar mühərriki';
     $('lk').classList.toggle('hide', !store.settings.pin);
   }
-  function renderAll() { renderStatus(); renderToday(); renderHero(); if (S.view === 'rem') renderRem(); if (S.view === 'mem') renderMem(); if (S.view === 'prj') renderPrj(); }
+  function renderAll() {
+    renderStatus();
+    renderToday();
+    renderHero();
+    if (S.view === 'dash') renderDashboard();
+    if (S.view === 'rem') renderRem();
+    if (S.view === 'mem') renderMem();
+    if (S.view === 'prj') renderPrj();
+    if (S.view === 'ftr') renderFileTransfer();
+    if (S.view === 'clip') renderClipboard();
+    if (S.view === 'conn') renderDevices();
+    if (S.view === 'sys') renderSystemMonitor();
+  }
   store.on(() => { renderAll(); });
 
   /* ---------- siyahı əməliyyatları (event delegation) ---------- */
@@ -625,6 +645,363 @@
     if (!confirm('Bütün xatırlatmalar, yaddaş və ayarlar silinəcək. Əminsən?')) return;
     firing.clear(); stopRing(); store.resetAll(); S.session.pending = null; $('chat').innerHTML = ''; syncSettings(); renderAll(); boot2(); toast('Hamısı silindi');
   });
+
+  /* ================= P2P, Dashboard, Fayl Ötürmə, Pano, Cihazlar ================= */
+  let cachedDevices = [];
+  let clipHistory = [];
+
+  function fmtBytes(bytes) {
+    if (!bytes || bytes <= 0) return '0 B';
+    const k = 1024, dm = 2;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+  }
+
+  function renderDashboard() {
+    const rems = store.items('reminders').filter(r => !r.done && !r.deleted);
+    const mems = store.items('memory').filter(m => !m.deleted);
+    const prjs = store.items('projects').filter(p => !p.deleted);
+    if ($('dRemCount')) $('dRemCount').textContent = rems.length;
+    if ($('dMemCount')) $('dMemCount').textContent = mems.length;
+    if ($('dPrjCount')) $('dPrjCount').textContent = prjs.length;
+    if ($('dDevCount')) $('dDevCount').textContent = cachedDevices.filter(d => !d.is_revoked).length || 1;
+
+    if (window.cahangirGetSystemMetrics) {
+      const m = window.cahangirGetSystemMetrics();
+      if (m) {
+        if ($('dServerStatus')) {
+          $('dServerStatus').textContent = m.server_online ? '● Onlayn (Bağlı)' : '○ Oflayn';
+          $('dServerStatus').className = m.server_online ? 'ok' : 'err';
+        }
+        if ($('dServerLatency')) $('dServerLatency').textContent = m.server_latency_ms >= 0 ? m.server_latency_ms + ' ms' : '—';
+        if ($('dTailscaleIp')) $('dTailscaleIp').textContent = m.tailscale_ip || 'Aktiv deyil';
+        if ($('dLocalIp')) $('dLocalIp').textContent = m.local_ip || '—';
+        if ($('dBattery')) $('dBattery').textContent = m.battery_percent + '%' + (m.battery_charging ? ' ⚡' : '');
+        if ($('dRam')) $('dRam').textContent = m.ram_used_mb + ' / ' + m.ram_total_mb + ' MB (' + m.ram_percent + '%)';
+        if ($('dStorage')) $('dStorage').textContent = m.disk_used_gb + ' / ' + m.disk_total_gb + ' GB (' + m.disk_percent + '%)';
+      }
+    }
+
+    if (window.cahangirGetTransferHistory) {
+      const history = window.cahangirGetTransferHistory();
+      const el = $('dRecentTransfers');
+      if (el) {
+        if (!history || history.length === 0) {
+          el.innerHTML = '<p class="note" style="margin:0;">Heç bir fayl ötürülməyib.</p>';
+        } else {
+          el.innerHTML = history.slice(0, 3).map(t => `
+            <div class="transfer-item">
+              <div class="thdr">
+                <span class="tname">${esc(t.filename)}</span>
+                <span class="${t.status === 'completed' ? 'ok' : 'err'}" style="font-size:11px;">
+                  ${t.status === 'completed' ? '✓ ' + (t.direction === 'send' ? 'Göndərildi' : 'Qəbul edildi') : '✗ Xəta'}
+                </span>
+              </div>
+              <div class="tmeta">
+                <span>${fmtBytes(t.file_size)} · ${t.speed_mbps ? t.speed_mbps.toFixed(2) + ' MB/s' : ''}</span>
+                <span>${new Date(t.timestamp).toLocaleTimeString()}</span>
+              </div>
+            </div>
+          `).join('');
+        }
+      }
+    }
+  }
+
+  function renderFileTransfer() {
+    if (window.cahangirGetP2pStatus) {
+      const st = window.cahangirGetP2pStatus();
+      if (st && st.ips && st.ips.length > 0 && $('ftrPeerIp') && !$('ftrPeerIp').value) {
+        const s = window.cahangirGetServerStatus ? window.cahangirGetServerStatus() : null;
+        if (s && s.serverUrl) {
+          try {
+            const host = new URL(s.serverUrl).hostname;
+            if (host) $('ftrPeerIp').value = host;
+          } catch (_) {}
+        }
+      }
+    }
+
+    const history = window.cahangirGetTransferHistory ? window.cahangirGetTransferHistory() : [];
+    const el = $('ftrList');
+    if (el) {
+      if (!history || history.length === 0) {
+        el.innerHTML = '<p class="note">Fayl ötürmə tarixçəsi boşdur.</p>';
+      } else {
+        el.innerHTML = history.map(t => `
+          <div class="transfer-item">
+            <div class="thdr">
+              <span class="tname">${esc(t.filename)}</span>
+              <span class="${t.status === 'completed' ? 'ok' : 'err'}" style="font-size:12px; font-weight:600;">
+                ${t.status === 'completed' ? (t.direction === 'send' ? '📤 Göndərildi' : '📥 Qəbul edildi') : '⚠️ Uğursuz'}
+              </span>
+            </div>
+            <div class="tmeta">
+              <span>${fmtBytes(t.file_size)} · Sürət: ${t.speed_mbps ? t.speed_mbps.toFixed(2) + ' MB/s' : '—'}</span>
+              <span>${new Date(t.timestamp).toLocaleDateString()} ${new Date(t.timestamp).toLocaleTimeString()}</span>
+            </div>
+            ${t.sha256 ? `<div style="font-size:10px; color:#64748b; font-family:monospace; overflow:hidden; text-overflow:ellipsis;">SHA-256: ${esc(t.sha256)}</div>` : ''}
+          </div>
+        `).join('');
+      }
+    }
+  }
+
+  function renderClipboard() {
+    const el = $('clipList');
+    if (el) {
+      if (!clipHistory || clipHistory.length === 0) {
+        el.innerHTML = '<p class="note">Pano tarixçəsi boşdur.</p>';
+      } else {
+        el.innerHTML = clipHistory.map((item, idx) => `
+          <div class="clip-item">
+            <div class="ctext">${esc(item.text)}</div>
+            <div class="cmeta">
+              <span>${esc(item.origin)} · ${new Date(item.timestamp).toLocaleTimeString()}</span>
+              <button class="btn small ghost" data-copy-clip="${idx}">Kopyala</button>
+            </div>
+          </div>
+        `).join('');
+
+        el.querySelectorAll('[data-copy-clip]').forEach(btn => {
+          btn.addEventListener('click', e => {
+            const idx = +e.target.dataset.copyClip;
+            const item = clipHistory[idx];
+            if (item && window.cahangirCopyClipboard) {
+              window.cahangirCopyClipboard(item.text);
+              toast('✓ Kopyalandı');
+            }
+          });
+        });
+      }
+    }
+  }
+
+  async function renderDevices() {
+    const el = $('connDeviceList');
+    if (!el) return;
+    el.innerHTML = '<p class="note">Cihazlar yüklənir...</p>';
+
+    const serverSt = window.cahangirGetServerStatus ? window.cahangirGetServerStatus() : null;
+    const serverUrl = serverSt ? serverSt.serverUrl : '';
+    const adminToken = (store.settings && store.settings.adminToken) || '';
+
+    if (!serverUrl) {
+      el.innerHTML = '<p class="note">Debian server URL təyin olunmayıb. Ayarlar bölməsindən serverə qoşulun.</p>';
+      return;
+    }
+
+    const res = window.cahangirListDevices ? window.cahangirListDevices(serverUrl, adminToken) : null;
+    if (res && res.success && Array.isArray(res.devices)) {
+      cachedDevices = res.devices;
+      if (cachedDevices.length === 0) {
+        el.innerHTML = '<p class="note">Qoşulmuş cihaz tapılmadı.</p>';
+      } else {
+        el.innerHTML = cachedDevices.map(d => {
+          const isOnline = d.is_revoked === 0;
+          return `
+            <div class="device-card">
+              <div class="dhdr">
+                <span class="dname">${esc(d.device_name || d.device_id)}</span>
+                <span class="${isOnline ? 'badge-online' : 'badge-revoked'}">
+                  ${isOnline ? '● Aktiv' : '○ Ləğv edilib'}
+                </span>
+              </div>
+              <div style="font-size:12px; color:var(--mut);">
+                <div>ID: ${esc(d.device_id)}</div>
+                ${d.ip_address ? `<div>IP: <b>${esc(d.ip_address)}</b></div>` : ''}
+                <div>Son fəaliyyət: ${d.last_seen ? new Date(d.last_seen).toLocaleString() : 'naməlum'}</div>
+              </div>
+              <div class="two" style="margin-top:6px;">
+                <button class="btn small" data-send-file-ip="${esc(d.ip_address || '')}">📁 Fayl Göndər</button>
+                <button class="btn small" data-send-clip-ip="${esc(d.ip_address || '')}">📋 Pano Göndər</button>
+              </div>
+              ${isOnline ? `<button class="btn danger small ghost" data-revoke-id="${esc(d.device_id)}" style="margin-top:4px;">Girişi Ləğv Et</button>` : ''}
+            </div>
+          `;
+        }).join('');
+
+        el.querySelectorAll('[data-send-file-ip]').forEach(btn => {
+          btn.addEventListener('click', e => {
+            const ip = e.target.dataset.sendFileIp;
+            if (ip && $('ftrPeerIp')) $('ftrPeerIp').value = ip;
+            go('ftr');
+          });
+        });
+
+        el.querySelectorAll('[data-send-clip-ip]').forEach(btn => {
+          btn.addEventListener('click', e => {
+            const ip = e.target.dataset.sendClipIp;
+            if (ip && $('clipPeerIp')) $('clipPeerIp').value = ip;
+            go('clip');
+          });
+        });
+
+        el.querySelectorAll('[data-revoke-id]').forEach(btn => {
+          btn.addEventListener('click', e => {
+            const devId = e.target.dataset.revokeId;
+            if (confirm(`"${devId}" cihazının girişini ləğv etmək istəyirsiniz?`)) {
+              if (window.cahangirRevokeDevice) {
+                const r = window.cahangirRevokeDevice(serverUrl, adminToken, devId);
+                if (r && r.success) {
+                  toast('Cihaz ləğv edildi');
+                  renderDevices();
+                } else {
+                  toast('Xəta: ' + (r ? r.error : 'Ləğv edilmədi'));
+                }
+              }
+            }
+          });
+        });
+      }
+    } else {
+      el.innerHTML = '<p class="note" style="color:var(--bad);">Cihazlar siyahısı alına bilmədi: ' + (res ? res.error : 'Serverə əlaqə yoxdur') + '</p>';
+    }
+  }
+
+  function renderSystemMonitor() {
+    if (!window.cahangirGetSystemMetrics) return;
+    const m = window.cahangirGetSystemMetrics();
+    if (!m) return;
+
+    if ($('sysDeviceName')) $('sysDeviceName').textContent = m.device_name || 'Galaxy S25';
+    if ($('sysBattery')) $('sysBattery').textContent = m.battery_percent + '%' + (m.battery_charging ? ' ⚡ (Zaryadkalanır)' : '') + (m.battery_temp ? ` (${m.battery_temp}°C)` : '');
+    if ($('sysRam')) $('sysRam').textContent = `${m.ram_used_mb} MB / ${m.ram_total_mb} MB (${m.ram_percent}%)`;
+    if ($('sysStorage')) $('sysStorage').textContent = `${m.disk_used_gb} GB / ${m.disk_total_gb} GB (${m.disk_percent}%)`;
+    if ($('sysTailscale')) $('sysTailscale').textContent = m.tailscale_ip || 'Qoşulmayıb';
+    if ($('sysLocalIp')) $('sysLocalIp').textContent = m.local_ip || '—';
+
+    if ($('sysServerStatus')) {
+      $('sysServerStatus').textContent = m.server_online ? '● Onlayn (Bağlı)' : '○ Oflayn';
+      $('sysServerStatus').className = m.server_online ? 'ok' : 'err';
+    }
+    if ($('sysServerPing')) $('sysServerPing').textContent = m.server_latency_ms >= 0 ? m.server_latency_ms + ' ms' : '—';
+    if ($('sysServerUrl')) $('sysServerUrl').textContent = m.server_url || 'Ayarlanmayıb';
+  }
+
+  /* ================= P2P Event Bindings ================= */
+  window.onP2pTransferStarted = function(id, name, size, sender) {
+    const box = $('ftrProgBox');
+    if (box) box.classList.remove('hide');
+    if ($('ftrStatusText')) $('ftrStatusText').textContent = 'Ötürülür: ' + name;
+    if ($('ftrPercentText')) $('ftrPercentText').textContent = '0%';
+    if ($('ftrProgressBar')) $('ftrProgressBar').style.width = '0%';
+    if ($('ftrBytesText')) $('ftrBytesText').textContent = '0 / ' + fmtBytes(size);
+    toast('Ötürmə başladı: ' + name);
+  };
+
+  window.onP2pTransferProgress = function(id, sent, total, percent, speed) {
+    const box = $('ftrProgBox');
+    if (box && box.classList.contains('hide')) box.classList.remove('hide');
+    if ($('ftrPercentText')) $('ftrPercentText').textContent = Math.round(percent) + '%';
+    if ($('ftrProgressBar')) $('ftrProgressBar').style.width = percent + '%';
+    if ($('ftrSpeedText')) $('ftrSpeedText').textContent = speed.toFixed(2) + ' MB/s';
+    if ($('ftrBytesText')) $('ftrBytesText').textContent = fmtBytes(sent) + ' / ' + fmtBytes(total);
+  };
+
+  window.onP2pTransferComplete = function(id, name, size, speed, sha, path) {
+    const box = $('ftrProgBox');
+    if (box) box.classList.add('hide');
+    toast('✓ Fayl tamamlandı: ' + name);
+    if (S.view === 'ftr') renderFileTransfer();
+    if (S.view === 'dash') renderDashboard();
+  };
+
+  window.onP2pTransferFailed = function(err) {
+    const box = $('ftrProgBox');
+    if (box) box.classList.add('hide');
+    toast('Xəta: ' + err);
+    if (S.view === 'ftr') renderFileTransfer();
+  };
+
+  window.onP2pClipboardReceived = function(text, origin, hash) {
+    clipHistory.unshift({
+      text: text,
+      origin: origin || 'Kompüter',
+      timestamp: Date.now()
+    });
+    if (clipHistory.length > 30) clipHistory.pop();
+    toast('📋 Pano mətni alındı: ' + origin);
+    if (S.view === 'clip') renderClipboard();
+  };
+
+  // Button hooks
+  if ($('dGoFtrBtn')) $('dGoFtrBtn').addEventListener('click', () => go('ftr'));
+
+  if ($('ftrPickBtn')) $('ftrPickBtn').addEventListener('click', () => {
+    const ip = ($('ftrPeerIp').value || '').trim();
+    const port = +$('ftrPeerPort').value || 8767;
+    if (!ip) {
+      alert('Zəhmət olmasa qarşı tərəfin IP ünvanını daxil edin.');
+      return;
+    }
+    if (window.cahangirPickAndSendFile) {
+      window.cahangirPickAndSendFile(ip, port);
+    }
+  });
+
+  if ($('ftrCancelBtn')) $('ftrCancelBtn').addEventListener('click', () => {
+    if (window.cahangirCancelTransfer) window.cahangirCancelTransfer();
+    toast('Ötürmə dayandırıldı');
+    if ($('ftrProgBox')) $('ftrProgBox').classList.add('hide');
+  });
+
+  if ($('ftrClearBtn')) $('ftrClearBtn').addEventListener('click', () => {
+    if (confirm('Fayl ötürmə tarixçəsini təmizləmək istəyirsiniz?')) {
+      if (window.cahangirClearTransferHistory) window.cahangirClearTransferHistory();
+      renderFileTransfer();
+      toast('Tarixçə təmizləndi');
+    }
+  });
+
+  if ($('clipPasteBtn')) $('clipPasteBtn').addEventListener('click', () => {
+    if (window.cahangirGetClipboard) {
+      const txt = window.cahangirGetClipboard();
+      if (txt) {
+        $('clipText').value = txt;
+        toast('Panodan oxundu');
+      } else {
+        toast('Pano boşdur');
+      }
+    }
+  });
+
+  if ($('clipSendBtn')) $('clipSendBtn').addEventListener('click', () => {
+    const ip = ($('clipPeerIp').value || '').trim();
+    const txt = ($('clipText').value || '').trim();
+    if (!ip || !txt) {
+      alert('Zəhmət olmasa IP və mətni daxil edin.');
+      return;
+    }
+    const statusTxt = $('clipSendStatus');
+    if (statusTxt) statusTxt.textContent = 'Göndərilir...';
+    if (window.cahangirSendClipboard) {
+      const res = window.cahangirSendClipboard(ip, 8767, txt);
+      if (res && res.success) {
+        if (statusTxt) {
+          statusTxt.textContent = '✓ Uğurla göndərildi!';
+          statusTxt.style.color = '#22e07a';
+        }
+        clipHistory.unshift({
+          text: txt,
+          origin: 'Bu Telefon (Göndərilib)',
+          timestamp: Date.now()
+        });
+        renderClipboard();
+        toast('✓ Pano göndərildi');
+        $('clipText').value = '';
+      } else {
+        if (statusTxt) {
+          statusTxt.textContent = 'Xəta: ' + (res ? res.error : 'Göndərilmədi');
+          statusTxt.style.color = '#ff6b81';
+        }
+      }
+    }
+  });
+
+  if ($('connRefreshBtn')) $('connRefreshBtn').addEventListener('click', renderDevices);
+  if ($('sysRefreshBtn')) $('sysRefreshBtn').addEventListener('click', renderSystemMonitor);
 
   /* ---- ekranı oyaq saxla ---- */
   let wl = null;

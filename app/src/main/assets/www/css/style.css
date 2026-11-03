@@ -188,14 +188,38 @@ dialog label{display:flex;flex-direction:column;gap:6px;color:var(--mut);font-si
 #toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%) translateY(20px);background:rgba(13,30,70,.96);border:1px solid var(--line2);border-radius:14px;padding:10px 16px;opacity:0;pointer-events:none;transition:.25s;z-index:70;max-width:90vw;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,.4)}
 #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 
+/* ---- Dashboard, P2P, Clipboard, Devices UI ---- */
+.btn.small{padding:4px 10px;font-size:12px;border-radius:10px}
+.dash-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:12px}
+.dash-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:12px;display:flex;align-items:center;gap:12px;backdrop-filter:blur(10px)}
+.dc-icon{font-size:24px;width:42px;height:42px;display:flex;align-items:center;justify-content:center;background:rgba(var(--acc-rgb),.14);border-radius:12px;flex:none}
+.dc-info b{display:block;font-size:18px;font-weight:700;color:#fff}
+.dc-info span{font-size:11px;color:var(--mut)}
+
+.prog-box{background:rgba(0,0,0,.25);border:1px solid var(--line);border-radius:14px;padding:12px}
+.progress-bar-bg{height:8px;background:rgba(255,255,255,.08);border-radius:999px;overflow:hidden;margin:4px 0}
+.progress-bar-fill{height:100%;background:linear-gradient(90deg,var(--acc),var(--hi));border-radius:999px;transition:width .2s}
+
+.sublist{display:flex;flex-direction:column;gap:8px}
+.transfer-item,.clip-item,.device-card{background:rgba(0,0,0,.2);border:1px solid var(--line);border-radius:14px;padding:10px 12px;display:flex;flex-direction:column;gap:6px}
+.transfer-item .thdr,.device-card .dhdr{display:flex;justify-content:space-between;align-items:center}
+.transfer-item .tname{font-weight:600;font-size:14px;color:#fff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:70%}
+.transfer-item .tmeta{font-size:12px;color:var(--mut);display:flex;justify-content:space-between}
+.clip-item .ctext{font-size:13px;color:var(--tx);overflow-wrap:anywhere;max-height:80px;overflow:hidden;text-overflow:ellipsis}
+.clip-item .cmeta{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--mut)}
+.device-card .dname{font-weight:600;font-size:14px;color:#fff}
+.badge-online{background:rgba(34,224,122,.2);color:var(--ok);border:1px solid var(--ok);border-radius:99px;padding:1px 8px;font-size:11px}
+.badge-revoked{background:rgba(255,107,129,.2);color:var(--bad);border:1px solid var(--bad);border-radius:99px;padding:1px 8px;font-size:11px}
+
 /* ---- mobil ---- */
 @media(max-width:900px){
   .app{grid-template-columns:1fr;padding:8px 10px calc(76px + var(--sab, env(safe-area-inset-bottom,0px)));gap:8px;padding-top:calc(8px + var(--sat, env(safe-area-inset-top,0px)))}
-  .side{position:fixed;left:0;right:0;bottom:0;z-index:20;flex-direction:row;justify-content:space-around;gap:0;padding:6px 6px calc(6px + var(--sab, env(safe-area-inset-bottom,0px)));border-radius:20px 20px 0 0;background:rgba(6,14,36,.96);overflow:visible}
+  .side{position:fixed;left:0;right:0;bottom:0;z-index:20;display:flex;flex-direction:row;justify-content:flex-start;gap:4px;padding:6px 8px calc(6px + var(--sab, env(safe-area-inset-bottom,0px)));border-radius:20px 20px 0 0;background:rgba(6,14,36,.96);overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+  .side::-webkit-scrollbar{display:none}
   .logo,.pill{display:none}
-  .nav{flex-direction:column;gap:2px;padding:6px 4px;font-size:11px;text-align:center;justify-content:center;width:auto;flex:1;position:relative;border-radius:12px}
-  .nav i{font-size:19px;width:auto}
-  .nav em{position:absolute;top:2px;right:calc(50% - 22px);font-size:10px;padding:0 6px;min-width:16px}
+  .nav{flex-direction:column;gap:2px;padding:6px 6px;font-size:10px;text-align:center;justify-content:center;width:auto;min-width:58px;flex:none;position:relative;border-radius:12px}
+  .nav i{font-size:18px;width:auto}
+  .nav em{position:absolute;top:2px;right:calc(50% - 18px);font-size:9px;padding:0 5px;min-width:14px}
   .main{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);gap:8px}
   .top{grid-column:1;gap:10px}.top h1{font-size:26px}.top .gr{display:none}
   .right{display:none}

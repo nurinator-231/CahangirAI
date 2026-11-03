@@ -9,6 +9,7 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.util.Log
 import android.view.ViewGroup
 import android.webkit.ConsoleMessage
@@ -34,11 +35,15 @@ import com.cahangir.assistant.alarm.ReminderScheduler
 import com.cahangir.assistant.bridge.CahangirBridge
 import com.cahangir.assistant.calendar.CalendarIntegrationManager
 import com.cahangir.assistant.data.local.repository.CahangirRepository
+import com.cahangir.assistant.p2p.P2pClient
+import com.cahangir.assistant.p2p.P2pServer
 import com.cahangir.assistant.saf.StorageAccessManager
 import com.cahangir.assistant.stt.SpeechRecognitionManager
 import com.cahangir.assistant.sync.SyncManager
+import com.cahangir.assistant.sysinfo.SystemMetricsManager
 import com.cahangir.assistant.tts.TextToSpeechEngine
 import org.json.JSONObject
+import java.util.concurrent.Executors
 
 class MainActivity : ComponentActivity() {
 
@@ -47,6 +52,9 @@ class MainActivity : ComponentActivity() {
     private lateinit var sttManager: SpeechRecognitionManager
     private lateinit var bridge: CahangirBridge
     private lateinit var repository: CahangirRepository
+    private lateinit var p2pServer: P2pServer
+    private lateinit var p2pClient: P2pClient
+    private lateinit var metricsManager: SystemMetricsManager
 
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
 
@@ -56,6 +64,10 @@ class MainActivity : ComponentActivity() {
     // Pending calendar export data waiting for user permission
     private var pendingCalendarTitle: String? = null
     private var pendingCalendarTime: Long? = null
+
+    // Pending P2P peer info when file picker is opened
+    private var pendingP2pPeerIp: String = ""
+    private var pendingP2pPeerPort: Int = 8767
 
     // File Chooser for <input type="file">
     private val fileChooserLauncher = registerForActivityResult(
@@ -102,6 +114,19 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // SAF Open Document launcher for P2P File Sending
+    private val p2pFilePickerLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            val peerIp = pendingP2pPeerIp
+            val peerPort = pendingP2pPeerPort
+            if (peerIp.isNotBlank()) {
+                startP2pFileSend(uri, peerIp, peerPort)
+            }
+        }
+    }
+
     // Calendar Permission launcher
     private val calendarPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -133,7 +158,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Tünd fon üçün status/naviqasiya ikonları HƏMİŞƏ açıq rəngdə (sistem işıqlı rejimdə olsa belə)
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT)
@@ -144,6 +168,12 @@ class MainActivity : ComponentActivity() {
         ttsEngine = TextToSpeechEngine(this)
         sttManager = SpeechRecognitionManager(this)
         repository = CahangirRepository(this)
+        p2pServer = P2pServer(this, 8767)
+        p2pClient = P2pClient(this)
+        metricsManager = SystemMetricsManager(this)
+
+        setupP2pServerListeners()
+        p2pServer.start()
 
         setupWebView()
         requestAppPermissions()
@@ -160,6 +190,109 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun setupP2pServerListeners() {
+        p2pServer.onTransferStarted = { id, name, size, sender ->
+            runOnUiThread {
+                webView.evaluateJavascript(
+                    "window._p2pTransferStarted && window._p2pTransferStarted(${JSONObject.quote(id)}, ${JSONObject.quote(name)}, $size, ${JSONObject.quote(sender)});",
+                    null
+                )
+            }
+        }
+
+        p2pServer.onTransferProgress = { id, received, total, percent, speed ->
+            runOnUiThread {
+                webView.evaluateJavascript(
+                    "window._p2pTransferProgress && window._p2pTransferProgress(${JSONObject.quote(id)}, $received, $total, $percent, $speed);",
+                    null
+                )
+            }
+        }
+
+        p2pServer.onTransferComplete = { id, name, size, speed, sha256, path ->
+            runOnUiThread {
+                webView.evaluateJavascript(
+                    "window._p2pTransferComplete && window._p2pTransferComplete(${JSONObject.quote(id)}, ${JSONObject.quote(name)}, $size, $speed, ${JSONObject.quote(sha256)}, ${JSONObject.quote(path)});",
+                    null
+                )
+                Toast.makeText(this@MainActivity, "📥 Fayl qəbul edildi: $name", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        p2pServer.onClipboardReceived = { text, origin, hash ->
+            runOnUiThread {
+                webView.evaluateJavascript(
+                    "window._p2pClipboardReceived && window._p2pClipboardReceived(${JSONObject.quote(text)}, ${JSONObject.quote(origin)}, ${JSONObject.quote(hash)});",
+                    null
+                )
+                Toast.makeText(this@MainActivity, "📋 Pano mətni alındı: $origin", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun startP2pFileSend(uri: Uri, peerIp: String, peerPort: Int) {
+        var filename = "file_${System.currentTimeMillis()}"
+        var fileSize = 0L
+
+        try {
+            contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+                if (cursor.moveToFirst()) {
+                    if (nameIndex != -1) filename = cursor.getString(nameIndex) ?: filename
+                    if (sizeIndex != -1) fileSize = cursor.getLong(sizeIndex)
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("MainActivity", "Failed querying file metadata", e)
+        }
+
+        Executors.newSingleThreadExecutor().execute {
+            runOnUiThread {
+                webView.evaluateJavascript(
+                    "window._p2pTransferStarted && window._p2pTransferStarted('outgoing', ${JSONObject.quote(filename)}, $fileSize, ${JSONObject.quote(peerIp)});",
+                    null
+                )
+            }
+
+            val res = p2pClient.sendFile(
+                peerIp = peerIp,
+                peerPort = peerPort,
+                uri = uri,
+                filename = filename,
+                fileSize = fileSize,
+                onProgress = { percent, speed, sent ->
+                    runOnUiThread {
+                        webView.evaluateJavascript(
+                            "window._p2pTransferProgress && window._p2pTransferProgress('outgoing', $sent, $fileSize, $percent, $speed);",
+                            null
+                        )
+                    }
+                }
+            )
+
+            runOnUiThread {
+                if (res.isSuccess) {
+                    val rec = res.getOrNull()
+                    val sha = rec?.sha256 ?: ""
+                    val speed = rec?.speedMbps ?: 0.0
+                    webView.evaluateJavascript(
+                        "window._p2pTransferComplete && window._p2pTransferComplete('outgoing', ${JSONObject.quote(filename)}, $fileSize, $speed, ${JSONObject.quote(sha)}, '');",
+                        null
+                    )
+                    Toast.makeText(this@MainActivity, "✓ Fayl uğurla göndərildi: $filename", Toast.LENGTH_SHORT).show()
+                } else {
+                    val err = res.exceptionOrNull()?.message ?: "Ötürmə xətası"
+                    webView.evaluateJavascript(
+                        "window._p2pTransferFailed && window._p2pTransferFailed(${JSONObject.quote(err)});",
+                        null
+                    )
+                    Toast.makeText(this@MainActivity, "Xəta: $err", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     private fun setupWebView() {
         webView = WebView(this).apply {
@@ -170,8 +303,6 @@ class MainActivity : ComponentActivity() {
             setBackgroundColor(Color.parseColor("#030814"))
         }
 
-        // Insets-in TƏK mənbəyi: native padding (status bar + cutout + klaviatura).
-        // index.html-də viewport-fit=cover çıxarılıb, ona görə CSS env() ikiqat boşluq yaratmır.
         ViewCompat.setOnApplyWindowInsetsListener(webView) { view, windowInsets ->
             val bars = windowInsets.getInsets(
                 WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
@@ -200,6 +331,9 @@ class MainActivity : ComponentActivity() {
             webView = webView,
             ttsEngine = ttsEngine,
             sttManager = sttManager,
+            p2pServer = p2pServer,
+            p2pClient = p2pClient,
+            metricsManager = metricsManager,
             onRequestAudioPermission = { requestAudioPermissionIfNeeded() },
             onRequestCalendarPermission = { title, time ->
                 pendingCalendarTitle = title
@@ -213,6 +347,11 @@ class MainActivity : ComponentActivity() {
             },
             onImportBackup = {
                 openDocumentLauncher.launch(arrayOf("application/json", "*/*"))
+            },
+            onPickAndSendFile = { peerIp, peerPort ->
+                pendingP2pPeerIp = peerIp
+                pendingP2pPeerPort = peerPort
+                p2pFilePickerLauncher.launch(arrayOf("*/*"))
             }
         )
 
@@ -347,6 +486,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        p2pServer.stop()
         ttsEngine.shutdown()
         sttManager.destroy()
         webView.destroy()

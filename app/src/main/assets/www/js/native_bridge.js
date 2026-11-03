@@ -1,10 +1,11 @@
 /* native_bridge.js — Cahangir Android Native Bridge.
    Provides native TTS, Speech Recognition, Exact Alarm Sync, Room/SQLite Local DB,
-   SAF File Access, Calendar Export, and Debian Central Synchronization. */
+   SAF File Access, Calendar Export, P2P File Transfer, Universal Clipboard,
+   Paired Devices Management, System Metrics and Debian Central Synchronization. */
 (function (root) {
   'use strict';
 
-  console.log('[Cahangir] Initializing enhanced native bridge...');
+  console.log('[Cahangir] Initializing enhanced native bridge with P2P support...');
 
   // 1. Native TTS bridge
   root.CahangirTTS = {
@@ -142,7 +143,145 @@
     }
   };
 
-  // 8. Notification from background sync
+  // 8. P2P Server & File Transfer API
+  root.cahangirGetP2pStatus = function () {
+    if (root.CahangirBridge && root.CahangirBridge.getP2pServerStatus) {
+      try {
+        return JSON.parse(root.CahangirBridge.getP2pServerStatus());
+      } catch (e) {
+        return { isRunning: false, port: 8767, ips: [] };
+      }
+    }
+    return { isRunning: false, port: 8767, ips: [] };
+  };
+
+  root.cahangirPickAndSendFile = function (peerIp, peerPort) {
+    if (root.CahangirBridge && root.CahangirBridge.pickAndSendFile) {
+      root.CahangirBridge.pickAndSendFile(peerIp, peerPort || 8767);
+    }
+  };
+
+  root.cahangirCancelTransfer = function () {
+    if (root.CahangirBridge && root.CahangirBridge.cancelFileTransfer) {
+      root.CahangirBridge.cancelFileTransfer();
+    }
+  };
+
+  root.cahangirGetTransferHistory = function () {
+    if (root.CahangirBridge && root.CahangirBridge.getTransferHistory) {
+      try {
+        return JSON.parse(root.CahangirBridge.getTransferHistory());
+      } catch (e) {
+        return [];
+      }
+    }
+    return [];
+  };
+
+  root.cahangirClearTransferHistory = function () {
+    if (root.CahangirBridge && root.CahangirBridge.clearTransferHistory) {
+      root.CahangirBridge.clearTransferHistory();
+    }
+  };
+
+  // 9. P2P Clipboard API
+  root.cahangirSendClipboard = function (peerIp, peerPort, text) {
+    if (root.CahangirBridge && root.CahangirBridge.sendClipboardToPeer) {
+      try {
+        return JSON.parse(root.CahangirBridge.sendClipboardToPeer(peerIp, peerPort || 8767, text));
+      } catch (e) {
+        return { success: false, error: e.message };
+      }
+    }
+    return { success: false, error: 'Bridge not ready' };
+  };
+
+  root.cahangirGetClipboard = function () {
+    if (root.CahangirBridge && root.CahangirBridge.getSystemClipboard) {
+      return root.CahangirBridge.getSystemClipboard();
+    }
+    return '';
+  };
+
+  root.cahangirCopyClipboard = function (text) {
+    if (root.CahangirBridge && root.CahangirBridge.copyToClipboard) {
+      root.CahangirBridge.copyToClipboard(text);
+    } else if (navigator.clipboard) {
+      navigator.clipboard.writeText(text);
+    }
+  };
+
+  // 10. Devices & Paired List API
+  root.cahangirListDevices = function (serverUrl, adminToken) {
+    if (root.CahangirBridge && root.CahangirBridge.listPairedDevices) {
+      try {
+        return JSON.parse(root.CahangirBridge.listPairedDevices(serverUrl || '', adminToken || ''));
+      } catch (e) {
+        return { success: false, error: e.message };
+      }
+    }
+    return { success: false, error: 'Bridge not ready' };
+  };
+
+  root.cahangirRevokeDevice = function (serverUrl, adminToken, deviceId) {
+    if (root.CahangirBridge && root.CahangirBridge.revokePairedDevice) {
+      try {
+        return JSON.parse(root.CahangirBridge.revokePairedDevice(serverUrl || '', adminToken || '', deviceId));
+      } catch (e) {
+        return { success: false, error: e.message };
+      }
+    }
+    return { success: false, error: 'Bridge not ready' };
+  };
+
+  // 11. System Metrics API
+  root.cahangirGetSystemMetrics = function () {
+    if (root.CahangirBridge && root.CahangirBridge.getSystemMetrics) {
+      try {
+        return JSON.parse(root.CahangirBridge.getSystemMetrics());
+      } catch (e) {
+        return null;
+      }
+    }
+    return null;
+  };
+
+  // 12. P2P Event handlers called from Android
+  root._p2pTransferStarted = function (id, name, size, sender) {
+    console.log('[P2P] Transfer started:', id, name, size, sender);
+    if (typeof root.onP2pTransferStarted === 'function') {
+      root.onP2pTransferStarted(id, name, size, sender);
+    }
+  };
+
+  root._p2pTransferProgress = function (id, sent, total, percent, speed) {
+    if (typeof root.onP2pTransferProgress === 'function') {
+      root.onP2pTransferProgress(id, sent, total, percent, speed);
+    }
+  };
+
+  root._p2pTransferComplete = function (id, name, size, speed, sha, path) {
+    console.log('[P2P] Transfer complete:', name, speed, sha);
+    if (typeof root.onP2pTransferComplete === 'function') {
+      root.onP2pTransferComplete(id, name, size, speed, sha, path);
+    }
+  };
+
+  root._p2pTransferFailed = function (err) {
+    console.error('[P2P] Transfer failed:', err);
+    if (typeof root.onP2pTransferFailed === 'function') {
+      root.onP2pTransferFailed(err);
+    }
+  };
+
+  root._p2pClipboardReceived = function (text, origin, hash) {
+    console.log('[P2P] Clipboard received from', origin);
+    if (typeof root.onP2pClipboardReceived === 'function') {
+      root.onP2pClipboardReceived(text, origin, hash);
+    }
+  };
+
+  // 13. Notification from background sync
   root.onServerSyncComplete = function () {
     console.log('[Cahangir] Server sync complete event received.');
     if (root.__cg && root.__cg.env && root.__cg.env.changed) {
@@ -157,20 +296,17 @@
         clearInterval(checkInterval);
         const store = root.__cg.store;
 
-        // Sync keepAwake setting on start
         if (store.settings && typeof store.settings.keepAwake === 'boolean' && root.CahangirBridge) {
           try {
             root.CahangirBridge.setKeepScreenOn(store.settings.keepAwake);
           } catch (e) {}
         }
 
-        // Register store listener for any changes (add, update, delete)
         if (store.on) {
           store.on(syncStoreToAndroid);
         }
         syncStoreToAndroid();
 
-        // Ensure input field is visible when focused (keyboard open)
         const txInput = document.getElementById('tx');
         if (txInput) {
           txInput.addEventListener('focus', function() {
@@ -182,7 +318,6 @@
           });
         }
 
-        // Hook Backup Buttons to SAF
         const dExportBtn = document.getElementById('dExport');
         if (dExportBtn && root.CahangirBridge) {
           dExportBtn.addEventListener('click', function (e) {
@@ -203,6 +338,7 @@
           const st = root.cahangirGetServerStatus();
           if (st && st.isConfigured) {
             if (syncUrlInp && !syncUrlInp.value) syncUrlInp.value = st.serverUrl;
+            if (syncTokenInp && !syncTokenInp.value && st.adminToken) syncTokenInp.value = st.adminToken;
             if (syncStatusTxt) {
               const dt = st.lastSync > 0 ? new Date(st.lastSync).toLocaleTimeString() : 'heç vaxt';
               syncStatusTxt.textContent = '✓ Qoşulub: ' + st.serverUrl + ' (Son sinx: ' + dt + ')';
@@ -229,7 +365,6 @@
             if (syncStatusTxt) syncStatusTxt.textContent = 'Qoşulur...';
             const res = root.cahangirConfigureServer(url, tok);
             if (res.success) {
-              if (syncTokenInp) syncTokenInp.value = '';
               updateSyncStatusUI();
               alert(res.message);
             } else {
@@ -252,7 +387,6 @@
     }, 250);
   });
 
-  // Watch for UI setting changes
   document.addEventListener('change', function (e) {
     if (e.target && e.target.id === 'sAwake' && root.CahangirBridge) {
       try {
