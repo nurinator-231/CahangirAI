@@ -95,12 +95,7 @@ pub async fn start_p2p_server(
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
     println!("[P2P] Server listening on 0.0.0.0:{}", port);
 
-    tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app).await {
-            eprintln!("[P2P] Server error: {}", e);
-        }
-    });
-
+    axum::serve(listener, app).await?;
     Ok(())
 }
 

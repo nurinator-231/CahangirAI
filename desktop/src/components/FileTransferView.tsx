@@ -23,7 +23,7 @@ export const FileTransferView: React.FC<FileTransferProps> = ({
   const t = translations[lang];
 
   const [filePath, setFilePath] = useState("");
-  const [peerIp, setPeerIp] = useState(selectedPeerIp || "100.114.91.32");
+  const [peerIp, setPeerIp] = useState(selectedPeerIp || localStorage.getItem("cahangir_last_peer_ip") || "");
   const [peerPort, setPeerPort] = useState(8767);
   const [isSending, setIsSending] = useState(false);
   const [progressPercent, setProgressPercent] = useState(0);
@@ -84,6 +84,7 @@ export const FileTransferView: React.FC<FileTransferProps> = ({
     setProgressPercent(0);
     setCurrentSpeed(0);
     setStatusMsg("Qarşı tərəflə əlaqə qurulur...");
+    localStorage.setItem("cahangir_last_peer_ip", peerIp.trim());
 
     try {
       const res = await api.startFileSend(peerIp.trim(), peerPort, filePath);

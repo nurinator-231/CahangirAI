@@ -20,7 +20,7 @@ export const ClipboardView: React.FC<ClipboardProps> = ({ lang, selectedPeerIp }
   const t = translations[lang];
 
   const [text, setText] = useState("");
-  const [peerIp, setPeerIp] = useState(selectedPeerIp || "100.114.91.32");
+  const [peerIp, setPeerIp] = useState(selectedPeerIp || localStorage.getItem("cahangir_last_peer_ip") || "");
   const [peerPort, setPeerPort] = useState(8767);
   const [isSending, setIsSending] = useState(false);
   const [statusMsg, setStatusMsg] = useState("");
@@ -62,6 +62,7 @@ export const ClipboardView: React.FC<ClipboardProps> = ({ lang, selectedPeerIp }
 
     setIsSending(true);
     setStatusMsg("Göndərilir...");
+    localStorage.setItem("cahangir_last_peer_ip", peerIp.trim());
 
     try {
       await api.sendClipboardToPeer(peerIp.trim(), peerPort, text.trim());

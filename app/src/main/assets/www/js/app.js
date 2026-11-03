@@ -712,14 +712,9 @@
   function renderFileTransfer() {
     if (window.cahangirGetP2pStatus) {
       const st = window.cahangirGetP2pStatus();
-      if (st && st.ips && st.ips.length > 0 && $('ftrPeerIp') && !$('ftrPeerIp').value) {
-        const s = window.cahangirGetServerStatus ? window.cahangirGetServerStatus() : null;
-        if (s && s.serverUrl) {
-          try {
-            const host = new URL(s.serverUrl).hostname;
-            if (host) $('ftrPeerIp').value = host;
-          } catch (_) {}
-        }
+      if ($('ftrPeerIp') && !$('ftrPeerIp').value) {
+        const lastIp = localStorage.getItem('last_p2p_peer_ip') || '';
+        if (lastIp) $('ftrPeerIp').value = lastIp;
       }
     }
 
@@ -749,6 +744,10 @@
   }
 
   function renderClipboard() {
+    if ($('clipPeerIp') && !$('clipPeerIp').value) {
+      const lastIp = localStorage.getItem('last_p2p_peer_ip') || '';
+      if (lastIp) $('clipPeerIp').value = lastIp;
+    }
     const el = $('clipList');
     if (el) {
       if (!clipHistory || clipHistory.length === 0) {
@@ -936,6 +935,7 @@
       alert('Zəhmət olmasa qarşı tərəfin IP ünvanını daxil edin.');
       return;
     }
+    localStorage.setItem('last_p2p_peer_ip', ip);
     if (window.cahangirPickAndSendFile) {
       window.cahangirPickAndSendFile(ip, port);
     }
@@ -974,6 +974,7 @@
       alert('Zəhmət olmasa IP və mətni daxil edin.');
       return;
     }
+    localStorage.setItem('last_p2p_peer_ip', ip);
     const statusTxt = $('clipSendStatus');
     if (statusTxt) statusTxt.textContent = 'Göndərilir...';
     if (window.cahangirSendClipboard) {

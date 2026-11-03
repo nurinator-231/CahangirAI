@@ -133,7 +133,7 @@ export const ConnectView: React.FC<ConnectProps> = ({
                 <div style={{ display: "flex", gap: "8px" }}>
                   <button
                     className="btn-secondary"
-                    onClick={() => handleSendFileTo("100.114.91.32")}
+                    onClick={() => handleSendFileTo((dev as any).tailscale_ip || (dev as any).ip_address || "")}
                     title="Bu cihaza fayl göndər"
                   >
                     <Send size={15} />
@@ -141,7 +141,7 @@ export const ConnectView: React.FC<ConnectProps> = ({
                   </button>
                   <button
                     className="btn-secondary"
-                    onClick={() => handleSendClipboardTo("100.114.91.32")}
+                    onClick={() => handleSendClipboardTo((dev as any).tailscale_ip || (dev as any).ip_address || "")}
                     title="Mətni bu cihaza göndər"
                   >
                     <Clipboard size={15} />

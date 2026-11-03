@@ -59,7 +59,7 @@ export function App() {
 
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [selectedPeerIp, setSelectedPeerIp] = useState<string>("100.114.91.32");
+  const [selectedPeerIp, setSelectedPeerIp] = useState<string>("");
 
   const addToast = (type: "info" | "success" | "warning" | "error", text: string) => {
     const id = `toast_${Date.now()}_${Math.random()}`;
