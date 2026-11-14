@@ -12,6 +12,7 @@ interface HeaderProps {
   onSync: () => void;
   isSyncing: boolean;
   lastSyncTime: number;
+  syncStatus?: { status: string; error?: string; pending?: number; configured?: boolean };
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -23,6 +24,7 @@ export const Header: React.FC<HeaderProps> = ({
   onSync,
   isSyncing,
   lastSyncTime,
+  syncStatus,
 }) => {
   const t = translations[lang];
   const [timeStr, setTimeStr] = useState("");
@@ -44,6 +46,7 @@ export const Header: React.FC<HeaderProps> = ({
 
   const viewTitles: Record<ActiveView, { title: string; subtitle: string }> = {
     dashboard: { title: t.dashTitle, subtitle: t.dashSubtitle },
+    planner: { title: t.plannerTitle, subtitle: t.plannerSubtitle },
     ai: { title: t.aiTitle, subtitle: t.aiSubtitle },
     connect: { title: t.connectTitle, subtitle: t.connectSubtitle },
     "file-transfer": { title: t.ftTitle, subtitle: t.ftSubtitle },
@@ -71,6 +74,23 @@ export const Header: React.FC<HeaderProps> = ({
           {timeStr}
         </span>
 
+        {/* Sync status */}
+        <span
+          className="muted"
+          title={syncStatus?.error || ""}
+          style={{ marginRight: 8, color: syncStatus?.status === "error" ? "var(--danger)" : syncStatus?.status === "ok" ? "var(--success)" : undefined }}
+        >
+          {!syncStatus?.configured
+            ? (lang === "en" ? "Offline (not paired)" : "Oflayn (cütləşdirilməyib)")
+            : syncStatus.status === "syncing"
+            ? t.syncing
+            : syncStatus.status === "error"
+            ? (lang === "en" ? "Sync error" : "Sinx xətası")
+            : lastSyncTime > 0
+            ? `✓ ${new Date(lastSyncTime).toLocaleTimeString(lang === "az" ? "az-AZ" : "en-GB", { hour: "2-digit", minute: "2-digit" })}`
+            : ""}
+          {syncStatus?.pending ? ` · ${syncStatus.pending} ${lang === "en" ? "pending" : "gözləyir"}` : ""}
+        </span>
         {/* Sync Button */}
         <button
           className="btn-primary"

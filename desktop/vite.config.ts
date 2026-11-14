@@ -22,6 +22,8 @@ export default defineConfig({
     watch: {
       ignored: ["**/src-tauri/**"],
     },
+    // The shared planner engine lives in ../shared (used by Android too).
+    fs: { allow: [".."] },
   },
   build: {
     target: "esnext",

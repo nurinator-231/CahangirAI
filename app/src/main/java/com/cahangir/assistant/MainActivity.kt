@@ -31,7 +31,9 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.webkit.WebViewAssetLoader
+import com.cahangir.assistant.alarm.ReminderReceiver
 import com.cahangir.assistant.alarm.ReminderScheduler
+import com.cahangir.assistant.clipboard.ClipboardShare
 import com.cahangir.assistant.bridge.CahangirBridge
 import com.cahangir.assistant.calendar.CalendarIntegrationManager
 import com.cahangir.assistant.data.local.repository.CahangirRepository
@@ -68,6 +70,12 @@ class MainActivity : ComponentActivity() {
     // Pending P2P peer info when file picker is opened
     private var pendingP2pPeerIp: String = ""
     private var pendingP2pPeerPort: Int = 8767
+    private var pendingP2pPeerName: String = ""
+    private val dataListener: () -> Unit = {
+        runOnUiThread {
+            if (::webView.isInitialized) webView.evaluateJavascript("window.onNativeDataChanged && window.onNativeDataChanged();", null)
+        }
+    }
 
     // File Chooser for <input type="file">
     private val fileChooserLauncher = registerForActivityResult(
@@ -122,7 +130,7 @@ class MainActivity : ComponentActivity() {
             val peerIp = pendingP2pPeerIp
             val peerPort = pendingP2pPeerPort
             if (peerIp.isNotBlank()) {
-                startP2pFileSend(uri, peerIp, peerPort)
+                startP2pFileSend(uri, peerIp, peerPort, pendingP2pPeerName)
             }
         }
     }
@@ -167,7 +175,8 @@ class MainActivity : ComponentActivity() {
 
         ttsEngine = TextToSpeechEngine(this)
         sttManager = SpeechRecognitionManager(this)
-        repository = CahangirRepository(this)
+        repository = CahangirRepository.get(this)
+        ReminderReceiver.createChannel(this)
         p2pServer = P2pServer(this, 8767)
         p2pClient = P2pClient(this)
         metricsManager = SystemMetricsManager(this)
@@ -182,11 +191,28 @@ class MainActivity : ComponentActivity() {
         // Schedule periodic sync via WorkManager
         SyncManager.schedulePeriodicSync(this)
 
-        // Listen for repository updates (e.g. from background sync) to refresh WebView
-        repository.addListener {
-            runOnUiThread {
-                webView.evaluateJavascript("if (typeof window.onServerSyncComplete === 'function') window.onServerSyncComplete();", null)
-            }
+        // Refresh the WebView whenever native data changes (local edit, sync, alarm).
+        repository.addListener(dataListener)
+        handleShareIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleShareIntent(intent)
+    }
+
+    /** "Share -> Cahangir" from any app: send the text to the universal clipboard. */
+    private fun handleShareIntent(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_SEND || intent.type?.startsWith("text/") != true) return
+        val text = intent.getStringExtra(Intent.EXTRA_TEXT)?.takeIf { it.isNotBlank() } ?: return
+        intent.action = null
+        Executors.newSingleThreadExecutor().execute {
+            val msg = try {
+                val r = ClipboardShare.share(this, text)
+                val n = r.getJSONArray("delivered_direct").length()
+                if (n > 0) "📋 Göndərildi ($n cihaz)" else "📋 Saxlanıldı — cihazlar sinxronda alacaq"
+            } catch (e: Exception) { "Xəta: ${e.message}" }
+            runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_SHORT).show() }
         }
     }
 
@@ -219,6 +245,12 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        p2pServer.onTransferFailed = { id, error ->
+            runOnUiThread {
+                webView.evaluateJavascript("window._p2pTransferFailed && window._p2pTransferFailed(${JSONObject.quote(error)});", null)
+            }
+        }
+
         p2pServer.onClipboardReceived = { text, origin, hash ->
             runOnUiThread {
                 webView.evaluateJavascript(
@@ -230,7 +262,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun startP2pFileSend(uri: Uri, peerIp: String, peerPort: Int) {
+    private fun startP2pFileSend(uri: Uri, peerIp: String, peerPort: Int, peerName: String) {
         var filename = "file_${System.currentTimeMillis()}"
         var fileSize = 0L
 
@@ -256,8 +288,9 @@ class MainActivity : ComponentActivity() {
             }
 
             val res = p2pClient.sendFile(
-                peerIp = peerIp,
-                peerPort = peerPort,
+                host = peerIp,
+                port = peerPort,
+                peerName = peerName.ifBlank { peerIp },
                 uri = uri,
                 filename = filename,
                 fileSize = fileSize,
@@ -348,10 +381,14 @@ class MainActivity : ComponentActivity() {
             onImportBackup = {
                 openDocumentLauncher.launch(arrayOf("application/json", "*/*"))
             },
-            onPickAndSendFile = { peerIp, peerPort ->
+            onPickAndSendFile = { peerIp, peerPort, peerName ->
                 pendingP2pPeerIp = peerIp
                 pendingP2pPeerPort = peerPort
+                pendingP2pPeerName = peerName
                 p2pFilePickerLauncher.launch(arrayOf("*/*"))
+            },
+            onRequestNotificationPermission = {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) permissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
             }
         )
 
@@ -412,7 +449,9 @@ class MainActivity : ComponentActivity() {
             }
 
             override fun onPermissionRequest(request: PermissionRequest?) {
-                request?.grant(request.resources)
+                // Only the microphone (Web Speech fallback) may be granted to the local UI.
+                val allowed = request?.resources?.filter { it == PermissionRequest.RESOURCE_AUDIO_CAPTURE }?.toTypedArray()
+                if (request != null && !allowed.isNullOrEmpty()) request.grant(allowed) else request?.deny()
             }
 
             override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
@@ -457,10 +496,6 @@ class MainActivity : ComponentActivity() {
     private fun requestAppPermissions() {
         val permissionsToRequest = mutableListOf<String>()
 
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            permissionsToRequest.add(Manifest.permission.RECORD_AUDIO)
-        }
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
@@ -481,11 +516,13 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         ReminderScheduler.scheduleNextAlarm(this)
-        SyncManager.enqueueImmediateSync(this)
+        SyncManager.enqueueImmediateSync(this, 0)
+        if (::webView.isInitialized) webView.evaluateJavascript("window.onNativeDataChanged && window.onNativeDataChanged();", null)
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        repository.removeListener(dataListener)
         p2pServer.stop()
         ttsEngine.shutdown()
         sttManager.destroy()

@@ -103,8 +103,22 @@
     return String(out).replace(/<end_of_turn>[\s\S]*$/, '').trim();
   }
 
+  /* ---------- Debian AI router (free-tier providers, keys stay on the server) ---------- */
+  async function askRouter(text, ctx) {
+    if (!root.nativeAsync) throw new Error('server bağlantısı yalnız tətbiqdə mövcuddur');
+    const msgs = (ctx.history || []).slice(-6).map(m => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }));
+    msgs.push({ role: 'user', content: text });
+    const r = await root.nativeAsync('aiPost', '/api/ai/chat', JSON.stringify({ messages: msgs, context: 'İndi: ' + ctx.nowText + '. İstifadəçi haqqında: ' + (ctx.facts || []).slice(-12).join('; ') }));
+    if (r.status !== 200) {
+      const d = r.body && r.body.detail;
+      throw new Error((d && (d.message || d)) || ('HTTP ' + r.status));
+    }
+    return String(r.body.text || '').trim();
+  }
+
   async function ask(text, ctx, cfg, onStatus) {
     if (!cfg || cfg.mode === 'off') return null;
+    if (cfg.mode === 'router') return askRouter(text, ctx);
     if (cfg.mode === 'endpoint') return askEndpoint(text, ctx, cfg);
     if (cfg.mode === 'device') return askDevice(text, ctx, cfg, onStatus);
     return null;

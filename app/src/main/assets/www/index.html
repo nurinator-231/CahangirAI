@@ -71,6 +71,7 @@
     <div class="logo"><svg viewBox="0 0 48 48" aria-hidden="true"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7fd0ff"/><stop offset="1" stop-color="#1b52ff"/></linearGradient></defs><path d="M35.5 14.5A15.5 15.5 0 1 0 35.5 33.5" fill="none" stroke="url(#lg)" stroke-width="7" stroke-linecap="round"/><circle cx="37" cy="24" r="3" fill="#fff" opacity=".9"/></svg><div><b>Cahangir</b><span>Sənin şəxsi köməkçin</span></div></div>
     <button class="nav" data-v="dash" type="button"><i aria-hidden="true">📊</i><span>İcmal</span></button>
     <button class="nav on" data-v="chat" type="button"><i aria-hidden="true">💬</i><span>Söhbət</span></button>
+    <button class="nav" data-v="plan" type="button"><i aria-hidden="true">🗓</i><span>Planlayıcı</span></button>
     <button class="nav" data-v="ftr" type="button"><i aria-hidden="true">🔄</i><span>Fayllar</span></button>
     <button class="nav" data-v="clip" type="button"><i aria-hidden="true">📋</i><span>Pano</span></button>
     <button class="nav" data-v="conn" type="button"><i aria-hidden="true">📱</i><span>Cihazlar</span></button>
@@ -158,6 +159,29 @@
       </section>
 
       <!-- XATIRLATMALAR -->
+      <!-- PLANLAYICI -->
+      <section id="v-plan" class="view listview hide">
+        <h2>🗓 Planlayıcı</h2>
+        <p class="note">Nə etməli olduğunuzu yazın və ya deyin — Cahangir tapşırıqları, son tarixləri, öhdəlikləri tapır və uyğun vaxtları təklif edir.</p>
+        <div class="card sec">
+          <textarea id="plText" rows="3" placeholder="Məs: Cüməyə qədər proqramlaşdırma tapşırığım var, təxminən 2 saat. Sabah saat 10-da ingilis dili dərsim var."></textarea>
+          <label class="row"><span>AI istifadə et (pulsuz provayderlər) <small id="plAiNote" class="note"></small></span><input type="checkbox" id="plUseAi"></label>
+          <div class="two">
+            <button class="btn" id="plMake" type="button">🪄 Planı qur</button>
+            <button class="btn primary" id="plUnderstand" type="button">✨ Anla</button>
+          </div>
+        </div>
+        <div class="card sec hide" id="plParsed"></div>
+        <div class="card sec hide" id="plPlan"></div>
+        <div class="two" id="plTabs" style="flex-wrap:wrap;">
+          <button class="btn small primary" data-tab="today" type="button">Bu gün</button>
+          <button class="btn small" data-tab="week" type="button">Həftə</button>
+          <button class="btn small" data-tab="tasks" type="button">Tapşırıqlar</button>
+          <button class="btn small" data-tab="events" type="button">Öhdəliklər</button>
+        </div>
+        <div id="plBody" class="sublist"></div>
+      </section>
+
       <section id="v-rem" class="view listview hide">
         <h2>Xatırlatmalar</h2>
         <form class="addform" id="remForm" autocomplete="off">
@@ -194,71 +218,55 @@
 
       <!-- P2P FAYL ÖTÜRMƏ -->
       <section id="v-ftr" class="view listview hide">
-        <h2>📁 P2P Fayl Ötürmə</h2>
-        <p class="note">Tailscale və ya ev Wi-Fi şəbəkəsi üzərindən kompüterlə birbaşa şifrəli fayl mübadiləsi.</p>
-
+        <h2>📁 Fayl ötürmə</h2>
+        <p class="note">Cütləşdirilmiş cihazlarla birbaşa ötürmə (Tailscale və ya ev Wi-Fi). Hər sorğu serverdən alınan açarla imzalanır, fayl hər iki tərəfdə SHA-256 ilə yoxlanılır. Qəbul üçün tətbiq açıq olmalıdır.</p>
+        <p class="note" id="ftrMyAddr"></p>
         <div class="card sec">
-          <h3>📤 Qarşı Cihaza Fayl Göndər</h3>
-          <label class="col">Qarşı Tərəfin IP Ünvanı
-            <input id="ftrPeerIp" type="text" placeholder="Kompüterin IP-si (məs: 100.70.168.90)">
-          </label>
-          <div class="two">
-            <label class="col">Port
-              <input id="ftrPeerPort" type="number" value="8767">
-            </label>
-            <div class="col" style="justify-content:flex-end;">
-              <button class="btn primary" id="ftrPickBtn" type="button" style="height:42px;">📁 Fayl Seç və Göndər</button>
-            </div>
+          <h3>📤 Fayl göndər</h3>
+          <select id="ftrPeer"><option value="">— cütləşdirilmiş cihaz seçin —</option><option value="manual">Ünvanı əl ilə daxil et…</option></select>
+          <div class="two hide" id="ftrManual">
+            <input id="ftrPeerIp" type="text" placeholder="IP (məs: 100.70.168.90)">
+            <input id="ftrPeerPort" type="number" value="8767">
           </div>
-
+          <div class="two">
+            <button class="btn" id="ftrPing" type="button">Yoxla</button>
+            <button class="btn primary" id="ftrPickBtn" type="button">📁 Fayl seç və göndər</button>
+          </div>
+          <p class="note" id="ftrStatusLine"></p>
           <div id="ftrProgBox" class="prog-box hide" style="margin-top:14px;">
             <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:4px;">
-              <span id="ftrStatusText">Göndərilir...</span>
-              <span id="ftrPercentText">0%</span>
+              <span id="ftrStatusText">Göndərilir...</span><span id="ftrPercentText">0%</span>
             </div>
-            <div class="progress-bar-bg">
-              <div id="ftrProgressBar" class="progress-bar-fill" style="width:0%;"></div>
-            </div>
-            <div style="display:flex; justify-content:space-between; font-size:11px; color:#8899bb; margin-top:4px;">
-              <span id="ftrSpeedText">0.00 MB/s</span>
-              <span id="ftrBytesText">0 / 0 MB</span>
-            </div>
+            <div class="progress-bar-bg"><div id="ftrProgressBar" class="progress-bar-fill" style="width:0%;"></div></div>
+            <div style="font-size:11px; color:#8899bb; margin-top:4px;"><span id="ftrSpeedText">0.00 MB/s</span></div>
             <button class="btn danger small" id="ftrCancelBtn" type="button" style="margin-top:8px;">Dayandır</button>
           </div>
         </div>
-
         <div class="card sec">
           <div style="display:flex; justify-content:space-between; align-items:center;">
-            <h3 style="margin:0;">📜 Ötürmə Tarixçəsi</h3>
+            <h3 style="margin:0;">📜 Ötürmə tarixçəsi</h3>
             <button class="btn ghost small" id="ftrClearBtn" type="button">Təmizlə</button>
           </div>
-          <div id="ftrList" class="sublist" style="margin-top:10px;">Fayl ötürmə tarixçəsi boşdur.</div>
+          <div id="ftrList" class="sublist" style="margin-top:10px;"></div>
         </div>
       </section>
 
-      <!-- PANO SİNXRONİZASİYASI -->
+      <!-- UNIVERSAL PANO -->
       <section id="v-clip" class="view listview hide">
-        <h2>📋 Pano Sinxronizasiyası</h2>
-        <p class="note">Kompüter və telefon arasında mətni kopyalayıb dərhal qarşı cihaza ötürün.</p>
-
+        <h2>📋 Universal pano</h2>
+        <p class="note">Kopyaladığınız mətni kompüterə göndərin. Kompüter əlçatandırsa dərhal çatır, deyilsə server vasitəsilə növbəti sinxronda. Başqa tətbiqdən də “Paylaş → Cahangir” işləyir.</p>
         <div class="card sec">
-          <h3>📤 Qarşı Cihaza Pano Göndər</h3>
-          <label class="col">Hədəf Cihazın IP-si
-            <input id="clipPeerIp" type="text" placeholder="Kompüterin IP-si (məs: 100.70.168.90)">
+          <button class="btn primary" id="clipShareBtn" type="button">📋 Kopyaladığımı göndər</button>
+          <label class="col">və ya mətn yazın
+            <textarea id="clipText" rows="3" placeholder="Göndəriləcək mətn..."></textarea>
           </label>
-          <label class="col">Göndəriləcək Mətn
-            <textarea id="clipText" rows="3" placeholder="Mətni bura yazın və ya panodan yapışdırın..."></textarea>
-          </label>
-          <div class="two">
-            <button class="btn" id="clipPasteBtn" type="button">📋 Panodan Oxu</button>
-            <button class="btn primary" id="clipSendBtn" type="button">➤ Cihaza Göndər</button>
-          </div>
+          <button class="btn" id="clipSendBtn" type="button">➤ Mətni göndər</button>
+          <label class="row"><span>Digər cihazlardan gələn mətni telefonun panosuna qoy</span><input type="checkbox" id="clipAccept"></label>
           <p id="clipSendStatus" class="note"></p>
         </div>
-
         <div class="card sec">
-          <h3>📜 Pano Tarixçəsi</h3>
-          <div id="clipList" class="sublist">Pano tarixçəsi boşdur.</div>
+          <h3>📜 Tarixçə</h3>
+          <div id="clipList" class="sublist"></div>
         </div>
       </section>
 
@@ -354,7 +362,8 @@
           <p class="note">Model olmadan da xatırlatma, yaddaş, taymer, hesablama işləyir. Ümumi suallara cavab üçün model qoş.</p>
           <label class="col">Rejim
             <select id="lMode">
-              <option value="off">Qoşulmayıb</option>
+              <option value="router">Debian AI router (pulsuz provayderlər — tövsiyə olunur)</option>
+              <option value="off">Qoşulmayıb (yalnız daxili qaydalar)</option>
               <option value="endpoint">Server (OpenAI-uyğun: llama.cpp, Ollama, LM Studio)</option>
               <option value="device">Cihazda Gemma (WebGPU)</option>
             </select>
@@ -385,17 +394,28 @@
         </div>
 
         <div class="card sec">
-          <h3>🌐 Mərkəzi Debian Server (Tailscale)</h3>
-          <p class="note">Ev serveri (Debian 13, Intel Atom) ilə cihazlararası sinxronizasiya. Oflayn rejim həmişə müstəqil işləyir.</p>
+          <h3>🌐 Mərkəzi Debian server</h3>
+          <p class="note">Telefon, Windows və Debian arasında sinxronizasiya. Server olmadan da hər şey telefonda işləyir; dəyişikliklər növbəyə alınır və bağlantı bərpa olunanda göndərilir.</p>
+          <label class="col">Server URL<input id="sSyncUrl" type="url" placeholder="http://100.x.y.z:8000"></label>
+          <label class="col">Cihazın adı<input id="sDeviceName" type="text"></label>
+          <label class="col" id="sSyncTokenRow">Admin pairing token (bir dəfə istifadə olunur, saxlanmır)<input id="sSyncToken" type="password" placeholder="Admin token"></label>
           <div class="two">
-            <label class="col">Server URL<input id="sSyncUrl" type="url" placeholder="http://100.x.y.z:8000"></label>
-            <label class="col">Admin Pairing Token<input id="sSyncToken" type="password" placeholder="Admin token"></label>
+            <button class="btn" id="sSyncTest" type="button">Bağlantını yoxla</button>
+            <button class="btn primary" id="sSyncSave" type="button">🔗 Serverə qoş</button>
           </div>
           <div class="two">
-            <button class="btn primary" id="sSyncSave" type="button">🔗 Serverə Qoş</button>
-            <button class="btn" id="sSyncNow" type="button">🔄 İndi Sinxron Et</button>
+            <button class="btn" id="sSyncNow" type="button">🔄 İndi sinxron et</button>
+            <button class="btn ghost hide" id="sUnpair" type="button">Serverdən ayır</button>
           </div>
+          <label class="col">Fon sinxronizasiyası
+            <select id="sAutoSync"><option value="0">Söndürülüb (yalnız əl ilə)</option><option value="15">hər 15 dəq</option><option value="30">hər 30 dəq</option><option value="60">hər saat</option><option value="120">hər 2 saat</option></select>
+          </label>
           <p class="note" id="sSyncStatus">Status: Oflayn / Lokal rejim</p>
+          <p class="note" id="sPermNote"></p>
+          <div class="two">
+            <label class="col">Planlayıcı: iş başlanğıcı<input type="time" id="sPlanStart"></label>
+            <label class="col">Planlayıcı: iş sonu<input type="time" id="sPlanEnd"></label>
+          </div>
         </div>
 
         <div class="card sec">
@@ -445,10 +465,12 @@
 </div>
 
 <script src="js/nlp.js"></script>
+<script src="js/planner.js"></script>
 <script src="js/store.js"></script>
 <script src="js/brain.js"></script>
 <script src="js/llm.js"></script>
 <script src="js/native_bridge.js"></script>
 <script src="js/app.js"></script>
+<script src="js/planner_ui.js"></script>
 </body>
 </html>

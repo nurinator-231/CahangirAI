@@ -1,12 +1,17 @@
 package com.cahangir.assistant.sync
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import androidx.work.*
-import com.cahangir.assistant.data.local.dao.LocalMemory
-import com.cahangir.assistant.data.local.dao.LocalProject
-import com.cahangir.assistant.data.local.dao.LocalReminder
+import com.cahangir.assistant.BuildConfig
+import com.cahangir.assistant.clipboard.ClipboardHub
+import com.cahangir.assistant.data.local.Entities
 import com.cahangir.assistant.data.local.repository.CahangirRepository
+import com.cahangir.assistant.p2p.P2pServer
 import com.cahangir.assistant.security.SecurityManager
 import org.json.JSONArray
 import org.json.JSONObject
@@ -14,174 +19,58 @@ import java.util.concurrent.TimeUnit
 
 class SyncManager(private val context: Context) {
 
-    private val repository = CahangirRepository(context)
-    private val securityManager = SecurityManager(context)
+    private val repository = CahangirRepository.get(context)
+    private val security = SecurityManager(context)
 
-    fun performSync(): Boolean {
-        if (!securityManager.isConfigured) {
-            Log.d("SyncManager", "Debian sync server not configured; operating in local offline mode.")
-            return false
-        }
-
-        val pendingReminders = repository.reminderDao.getPendingSync()
-        val pendingMemories = repository.memoryDao.getPendingSync()
-        val pendingProjects = repository.projectDao.getPendingSync()
-
-        val payload = JSONObject().apply {
-            put("device_id", securityManager.deviceId)
-            put("client_timestamp", securityManager.lastSyncTimestamp)
-
-            val remArr = JSONArray()
-            for (r in pendingReminders) {
-                remArr.put(JSONObject().apply {
-                    put("id", r.id)
-                    put("user_id", r.userId)
-                    put("text", r.text)
-                    put("due", r.due ?: JSONObject.NULL)
-                    put("snooze", r.snooze ?: JSONObject.NULL)
-                    put("done", if (r.done) 1 else 0)
-                    put("timer", if (r.timer) 1 else 0)
-                    put("repeat", r.repeat ?: JSONObject.NULL)
-                    put("created_at", r.createdAt)
-                    put("updated_at", r.updatedAt)
-                    put("deleted", if (r.deleted) 1 else 0)
-                })
-            }
-            put("reminders", remArr)
-
-            val memArr = JSONArray()
-            for (m in pendingMemories) {
-                memArr.put(JSONObject().apply {
-                    put("id", m.id)
-                    put("user_id", m.userId)
-                    put("category", m.category)
-                    put("fact_text", m.factText)
-                    put("confidence", m.confidence.toDouble())
-                    put("source", m.source)
-                    put("created_at", m.createdAt)
-                    put("updated_at", m.updatedAt)
-                    put("deleted", if (m.deleted) 1 else 0)
-                })
-            }
-            put("memories", memArr)
-
-            val prjArr = JSONArray()
-            for (p in pendingProjects) {
-                prjArr.put(JSONObject().apply {
-                    put("id", p.id)
-                    put("user_id", p.userId)
-                    put("title", p.title)
-                    put("status", p.status)
-                    put("notes", p.notes)
-                    put("created_at", p.createdAt)
-                    put("updated_at", p.updatedAt)
-                    put("deleted", if (p.deleted) 1 else 0)
-                })
-            }
-            put("projects", prjArr)
-        }
-
-        val (success, responseStr) = SyncApiClient.executeSync(
-            serverUrl = securityManager.serverUrl,
-            deviceToken = securityManager.deviceToken,
-            payloadJson = payload.toString()
+    /** Runs one full sync. Returns the report, or throws SyncEngine.SyncException. */
+    @Synchronized
+    fun performSync(): SyncEngine.Report {
+        val p2p = JSONObject()
+            .put("hosts", JSONArray(P2pServer.getNetworkIps().take(8)))
+            .put("port", P2pServer.DEFAULT_PORT)
+            .put("platform", "android")
+            .put("app_version", BuildConfig.VERSION_NAME)
+        val cfg = SyncEngine.Config(
+            serverUrl = security.serverUrl,
+            deviceToken = security.deviceToken,
+            deviceId = security.deviceId,
+            sinceRev = security.lastServerRev,
+            clientTimestamp = security.lastSyncTimestamp,
+            p2p = p2p,
         )
-
-        if (!success) {
-            Log.w("SyncManager", "Sync round-trip failed: $responseStr")
-            return false
-        }
-
-        // 1) Cavabı TAM parse et. Xəta olsa, bazaya heç nə yazılmır, pending qeydlər toxunulmaz qalır.
-        val serverTimestamp: Long
-        val deltaRem = mutableListOf<LocalReminder>()
-        val deltaMem = mutableListOf<LocalMemory>()
-        val deltaPrj = mutableListOf<LocalProject>()
         try {
-            val respJson = JSONObject(responseStr)
-            serverTimestamp = respJson.getLong("server_timestamp")
-            val delta = respJson.getJSONObject("delta")
-
-            delta.optJSONArray("reminders")?.let { arr ->
-                for (i in 0 until arr.length()) {
-                    val o = arr.getJSONObject(i)
-                    deltaRem.add(LocalReminder(
-                        id = o.getString("id"),
-                        userId = o.optString("user_id", "default"),
-                        text = o.getString("text"),
-                        due = if (o.isNull("due")) null else o.getLong("due"),
-                        snooze = if (o.isNull("snooze")) null else o.getLong("snooze"),
-                        done = o.optInt("done", 0) == 1,
-                        timer = o.optInt("timer", 0) == 1,
-                        repeat = if (o.isNull("repeat")) null else o.getString("repeat"),
-                        createdAt = o.getLong("created_at"),
-                        updatedAt = o.getLong("updated_at"),
-                        deleted = o.optInt("deleted", 0) == 1,
-                        syncStatus = 0
-                    ))
-                }
+            val report = SyncEngine(repository.store, Entities.NAMES).run(cfg) { rev, ts ->
+                security.lastServerRev = rev
+                security.lastSyncTimestamp = ts
             }
-            delta.optJSONArray("memories")?.let { arr ->
-                for (i in 0 until arr.length()) {
-                    val o = arr.getJSONObject(i)
-                    deltaMem.add(LocalMemory(
-                        id = o.getString("id"),
-                        userId = o.optString("user_id", "default"),
-                        category = o.optString("category", "general"),
-                        factText = o.getString("fact_text"),
-                        confidence = o.optDouble("confidence", 1.0).toFloat(),
-                        source = o.optString("source", "user"),
-                        createdAt = o.getLong("created_at"),
-                        updatedAt = o.getLong("updated_at"),
-                        deleted = o.optInt("deleted", 0) == 1,
-                        syncStatus = 0
-                    ))
-                }
-            }
-            delta.optJSONArray("projects")?.let { arr ->
-                for (i in 0 until arr.length()) {
-                    val o = arr.getJSONObject(i)
-                    deltaPrj.add(LocalProject(
-                        id = o.getString("id"),
-                        userId = o.optString("user_id", "default"),
-                        title = o.getString("title"),
-                        status = o.optString("status", "active"),
-                        notes = o.optString("notes", ""),
-                        createdAt = o.getLong("created_at"),
-                        updatedAt = o.getLong("updated_at"),
-                        deleted = o.optInt("deleted", 0) == 1,
-                        syncStatus = 0
-                    ))
-                }
-            }
-        } catch (e: Exception) {
-            Log.e("SyncManager", "Failed to parse sync response; nothing was changed locally", e)
-            return false
+            report.meshKey?.let { if (it != security.meshKey) { security.meshKey = it; security.meshKeyId = report.meshKeyId } }
+            security.lastSyncStatus = "ok"
+            security.lastSyncError = ""
+            if (report.changedEntities.isNotEmpty()) repository.notifyDataChanged(report.changedEntities)
+            applyIncomingClipboard(report.incomingClipboard)
+            Log.i("SyncManager", "Sync ok: pushed=${report.pushed} received=${report.appliedRemote} rev=${report.serverRev}")
+            return report
+        } catch (e: SyncEngine.SyncException) {
+            security.lastSyncStatus = "error"
+            security.lastSyncError = e.message ?: "error"
+            throw e
         }
+    }
 
-        // 2) Hamısını BİR tranzaksiyada yaz: pending işarələmə + LWW ilə delta.
-        try {
-            val changed = repository.inTransaction {
-                var n = 0
-                // Yalnız göndərilən andan bəri dəyişməyənlər synced olur
-                repository.reminderDao.markSyncedIfUnchanged(pendingReminders)
-                repository.memoryDao.markSyncedIfUnchanged(pendingMemories)
-                repository.projectDao.markSyncedIfUnchanged(pendingProjects)
-
-                for (r in deltaRem) if (repository.reminderDao.upsertFromServer(r)) n++
-                for (m in deltaMem) if (repository.memoryDao.upsertFromServer(m)) n++
-                for (p in deltaPrj) if (repository.projectDao.upsertFromServer(p)) n++
-                n
+    private fun applyIncomingClipboard(items: List<JSONObject>) {
+        val newest = items.lastOrNull() ?: return
+        if (!security.clipboardAccept) return
+        if (System.currentTimeMillis() - newest.optLong("created_at") > 10 * 60 * 1000) return
+        val text = newest.optString("text")
+        val hash = ClipboardHub.hash(text)
+        if (!ClipboardHub.markSeen(hash)) return
+        Handler(Looper.getMainLooper()).post {
+            try {
+                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(ClipData.newPlainText("Cahangir", text))
+            } catch (e: Exception) {
+                Log.w("SyncManager", "Could not set clipboard", e)
             }
-
-            // Zaman damğası yalnız uğurlu yazıdan SONRA yenilənir
-            securityManager.lastSyncTimestamp = serverTimestamp
-            if (changed > 0) repository.onSyncApplied() // UI yenilə + alarmları yenidən planlaşdır
-            Log.i("SyncManager", "Sync completed at server time $serverTimestamp (applied $changed server changes)")
-            return true
-        } catch (e: Exception) {
-            Log.e("SyncManager", "Failed to apply sync response; transaction rolled back", e)
-            return false
         }
     }
 
@@ -190,40 +79,30 @@ class SyncManager(private val context: Context) {
         private const val IMMEDIATE_SYNC_TAG = "cahangir_immediate_sync"
 
         fun schedulePeriodicSync(context: Context) {
-            val constraints = Constraints.Builder()
-                .setRequiredNetworkType(NetworkType.CONNECTED)
-                .build()
-
-            val periodicRequest = PeriodicWorkRequestBuilder<SyncWorker>(2L, TimeUnit.HOURS)
-                .setConstraints(constraints)
-                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15L, TimeUnit.MINUTES)
+            val minutes = SecurityManager(context).autoSyncMinutes
+            val wm = WorkManager.getInstance(context)
+            if (minutes <= 0) {
+                wm.cancelUniqueWork(PERIODIC_SYNC_TAG)
+                return
+            }
+            val request = PeriodicWorkRequestBuilder<SyncWorker>(maxOf(15L, minutes.toLong()), TimeUnit.MINUTES)
+                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 1, TimeUnit.MINUTES)
                 .addTag(PERIODIC_SYNC_TAG)
                 .build()
-
-            WorkManager.getInstance(context).enqueueUniquePeriodicWork(
-                PERIODIC_SYNC_TAG,
-                ExistingPeriodicWorkPolicy.KEEP,
-                periodicRequest
-            )
-            Log.i("SyncManager", "Scheduled periodic sync with WorkManager")
+            wm.enqueueUniquePeriodicWork(PERIODIC_SYNC_TAG, ExistingPeriodicWorkPolicy.UPDATE, request)
         }
 
-        fun enqueueImmediateSync(context: Context) {
-            val constraints = Constraints.Builder()
-                .setRequiredNetworkType(NetworkType.CONNECTED)
-                .build()
-
-            val oneTimeRequest = OneTimeWorkRequestBuilder<SyncWorker>()
-                .setConstraints(constraints)
+        /** Debounced: rapid local edits collapse into one sync a few seconds later. */
+        fun enqueueImmediateSync(context: Context, delaySeconds: Long = 3) {
+            if (!SecurityManager(context).isConfigured) return
+            val request = OneTimeWorkRequestBuilder<SyncWorker>()
+                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .setInitialDelay(delaySeconds, TimeUnit.SECONDS)
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
                 .addTag(IMMEDIATE_SYNC_TAG)
                 .build()
-
-            WorkManager.getInstance(context).enqueueUniqueWork(
-                IMMEDIATE_SYNC_TAG,
-                ExistingWorkPolicy.REPLACE,
-                oneTimeRequest
-            )
+            WorkManager.getInstance(context).enqueueUniqueWork(IMMEDIATE_SYNC_TAG, ExistingWorkPolicy.REPLACE, request)
         }
     }
 }

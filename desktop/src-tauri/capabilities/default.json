@@ -1,12 +1,11 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-cli/schema.json",
   "identifier": "default",
-  "description": "Default permissions for Cahangir Desktop",
-  "windows": ["main"],
+  "description": "Default permissions for Cahangir Desktop. The UI calls only the app's own Rust commands; plugins (dialog, notification, clipboard, autostart) are used from Rust, not exposed to the WebView.",
+  "windows": [
+    "main"
+  ],
   "permissions": [
-    "core:default",
-    "dialog:default",
-    "notification:default",
-    "clipboard-manager:default"
+    "core:default"
   ]
 }

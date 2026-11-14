@@ -1,4 +1,5 @@
 import { api } from "./api";
+import { Planner } from "./planner";
 
 export interface AIResponse {
   text: string;
@@ -6,163 +7,103 @@ export interface AIResponse {
   isStructuredAction?: boolean;
 }
 
+/**
+ * Chat assistant. Deterministic commands (reminders, memory, focus timer, math, help)
+ * run locally and offline. Everything else goes to the Debian server's AI router, which
+ * only uses explicitly enabled free-tier providers. If no provider is available the
+ * user is told so plainly — no paid fallback, no invented answer.
+ */
 export class AIProvider {
-  /**
-   * Processes natural language input in Azerbaijani and English.
-   * If an action like reminder, memory, or timer is detected, it executes it directly into local SQLite!
-   */
-  public static async processMessage(
-    userInput: string,
-    endpointUrl?: string,
-    apiKey?: string
-  ): Promise<AIResponse> {
+  public static async processMessage(userInput: string, history: { role: string; content: string }[] = []): Promise<AIResponse> {
     const raw = userInput.trim();
-    const lower = raw.toLowerCase();
+    const lower = raw.toLocaleLowerCase("az");
+    const lang: "az" | "en" = /[əıöüşçğ]|xatırlat|yadda|hesabla|fokus|kömək/.test(lower) ? "az" : "en";
 
-    // 1. Check for quick math
-    const mathMatch = lower.match(/^hesabla:\s*([0-9\+\-\*\/\(\)\.\s]+)$/);
+    // 1. Arithmetic (safe parser, no eval)
+    const mathMatch = lower.match(/^(?:hesabla|calc|calculate)[:\s]+([0-9+\-*/().,\s^]+)$/);
     if (mathMatch) {
-      try {
-        // Safe evaluation of simple math
-        const expr = mathMatch[1].replace(/[^0-9\+\-\*\/\(\)\.]/g, "");
-        const res = Function(`'use strict'; return (${expr})`)();
-        return {
-          text: `Hesablamanın nəticəsi: **${res}**`,
-          isStructuredAction: true,
-        };
-      } catch {
-        return { text: "Riyazi ifadə düzgün deyil." };
-      }
+      const v = safeMath(mathMatch[1].replace(/,/g, "."));
+      return { text: v === null ? (lang === "en" ? "That expression is not valid." : "Riyazi ifadə düzgün deyil.") : `= **${v}**`, isStructuredAction: true };
     }
 
-    // 2. Reminder patterns (məs: "sabah saat 9-da zəng xatırlat", "30 dəqiqə sonra iclas xatırlat")
-    if (lower.includes("xatırlat") || lower.includes("remind")) {
-      let dueTime: number = Date.now() + 60 * 60 * 1000; // default 1 hour
-      let reminderText = raw;
-
-      if (lower.includes("30 dəqiqə") || lower.includes("30 dəq")) {
-        dueTime = Date.now() + 30 * 60 * 1000;
-        reminderText = raw.replace(/30\s*dəqiqə.*xatırlat/i, "").trim() || "Xatırlatma";
-      } else if (lower.includes("10 dəqiqə") || lower.includes("10 dəq")) {
-        dueTime = Date.now() + 10 * 60 * 1000;
-        reminderText = raw.replace(/10\s*dəqiqə.*xatırlat/i, "").trim() || "Xatırlatma";
-      } else if (lower.includes("sabah")) {
-        dueTime = Date.now() + 24 * 60 * 60 * 1000;
-        reminderText = raw.replace(/sabah.*xatırlat/i, "").trim() || "Sabahkı tapşırıq";
+    // 2. Reminder: only created when the user states a time; otherwise ask.
+    if (/xatırlat|remind me|reminder|alarm|oyat/.test(lower)) {
+      const now = Date.now();
+      const date = Planner.findDate(raw, now);
+      const time = Planner.findTime(raw);
+      const dur = /(?:in|sonra|after)/.test(lower) ? Planner.findDuration(raw) : null;
+      let due: number | null = null;
+      if (dur && /\b(in|after)\b|sonra/.test(lower)) due = now + dur.minutes * 60000;
+      else if (time) {
+        const base = date ? date.day : Planner.sod(now);
+        const d = new Date(base);
+        d.setHours(time.h, time.m, 0, 0);
+        due = d.getTime();
+        if (!date && due <= now) due += 86400000;
+      } else if (date) {
+        return { text: lang === "en" ? "At what time should I remind you?" : "Saat neçədə xatırladım?" };
       }
+      if (due === null) return { text: lang === "en" ? "When should I remind you? (e.g. “remind me tomorrow at 9 to call the bank”)" : "Nə vaxt xatırladım? (məs: “sabah saat 9-da banka zəng etməyi xatırlat”)" };
+      const spans = [date?.text, time?.text, dur?.text].filter(Boolean) as string[];
+      let title = raw;
+      for (const s of spans) title = title.replace(new RegExp(s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"), " ");
+      title = title.replace(/xatırlat(?:ma)?(?:ğı)?|remind me (?:to )?|reminder:?|\bto\b(?=\s*$)/gi, " ").replace(/\s+/g, " ").replace(/^[\s,:-]+|[\s,:-]+$/g, "") || (lang === "en" ? "Reminder" : "Xatırlatma");
+      await api.saveReminder({ text: title, due, done: 0, timer: 0, kind: "custom" });
+      return { text: `🔔 ${title} — ${Planner.fmtWhen(due, lang)}`, actionTaken: "reminder_created", isStructuredAction: true };
+    }
 
-      await api.saveReminder({
-        text: reminderText.replace(/^xatırlat:?/i, "").trim() || raw,
-        due: dueTime,
-        done: 0,
-        timer: 0,
-        sync_status: 1,
-      });
+    // 3. Memory
+    const mem = raw.match(/^(?:yadda saxla|qeyd et|remember)\s*:?\s*(.+)$/i);
+    if (mem) {
+      await api.saveMemory({ fact_text: mem[1].trim(), category: "general", confidence: 1.0, source: "chat" });
+      return { text: lang === "en" ? `🧠 Saved: “${mem[1].trim()}”` : `🧠 Yadda saxladım: “${mem[1].trim()}”`, actionTaken: "memory_saved", isStructuredAction: true };
+    }
 
+    // 4. Focus timer
+    if (/^(fokus|focus|pomodoro)\b/.test(lower)) {
+      const due = Date.now() + 25 * 60 * 1000;
+      await api.saveReminder({ text: lang === "en" ? "Focus session finished — take a break" : "Fokus bitdi — fasilə et", due, done: 0, timer: 1, kind: "timer" });
+      return { text: lang === "en" ? "🎯 Focus started (25 min)." : "🎯 Fokus başladı (25 dəqiqə).", actionTaken: "focus_timer", isStructuredAction: true };
+    }
+
+    // 5. Help
+    if (/^(kömək|help)$|nə edə bilirsən|what can you do/.test(lower)) {
       return {
-        text: `✓ Xatırlatma yaradıldı və yaddaşa yazıldı:\n> **${reminderText}**\n\nVaxt: *${new Date(
-          dueTime
-        ).toLocaleString("az-AZ")}*`,
-        actionTaken: "reminder_created",
-        isStructuredAction: true,
+        text: lang === "en"
+          ? "I can: plan tasks (Planner tab: “assignment due Friday, 2 hours”), set reminders (“remind me tomorrow at 9 to call the bank”), remember facts (“remember: door code 4821”), start a focus timer (“focus”), calculate (“calc 12*7”). Other questions go to the free AI providers on your Debian server when available."
+          : "Bacardıqlarım: tapşırıqları planlamaq (Planlayıcı: “cüməyə qədər tapşırıq, 2 saat”), xatırlatma (“sabah saat 9-da banka zəng etməyi xatırlat”), yadda saxlamaq (“yadda saxla: qapı kodu 4821”), fokus taymeri (“fokus”), hesablamaq (“hesabla 12*7”). Digər suallar Debian serverdəki pulsuz AI provayderlərinə göndərilir.",
       };
     }
 
-    // 3. Memory patterns (məs: "yadda saxla: anamın ad günü 15 maydır")
-    if (lower.startsWith("yadda saxla") || lower.startsWith("qeyd et") || lower.startsWith("remember")) {
-      const fact = raw
-        .replace(/^(yadda saxla|qeyd et|remember):?\s*/i, "")
-        .trim();
-
-      if (fact.length > 0) {
-        await api.saveMemory({
-          fact_text: fact,
-          category: "general",
-          confidence: 1.0,
-          source: "chat",
-          sync_status: 1,
-        });
-
-        return {
-          text: `🧠 Yadda saxladım:\n> "${fact}"\n\nBu məlumat Debian mərkəzi yaddaşı ilə də sinxronlaşdırılacaq.`,
-          actionTaken: "memory_saved",
-          isStructuredAction: true,
-        };
-      }
+    // 6. Free-tier AI via the Debian router
+    try {
+      const msgs = history.filter((m) => m.role === "user" || m.role === "assistant").slice(-8).map((m) => ({ role: m.role, content: m.content }));
+      msgs.push({ role: "user", content: raw });
+      const res = await api.aiChat(msgs);
+      if (res.status === 200) return { text: res.body.text + `\n\n_— ${res.body.provider} (${res.body.model})_` };
+      const detail = res.body?.detail;
+      const why = typeof detail === "string" ? detail : detail?.message || `HTTP ${res.status}`;
+      return { text: lang === "en" ? `AI is not available right now (${why}). Built-in commands still work — type “help”.` : `AI hazırda əlçatmazdır (${why}). Daxili əmrlər işləyir — “kömək” yazın.` };
+    } catch (e: any) {
+      return { text: lang === "en" ? `AI is unavailable offline (${e}). Built-in commands still work — type “help”.` : `Oflayn rejimdə AI əlçatmazdır (${e}). Daxili əmrlər işləyir — “kömək” yazın.` };
     }
-
-    // 4. Focus mode (məs: "fokus", "pomodoro")
-    if (lower.includes("fokus") || lower.includes("focus")) {
-      const dueTime = Date.now() + 25 * 60 * 1000;
-      await api.saveReminder({
-        text: "🎯 25 dəqiqəlik fokus müddəti bitdi!",
-        due: dueTime,
-        done: 0,
-        timer: 1,
-        sync_status: 1,
-      });
-
-      return {
-        text: "🎯 **Fokus rejimi başladı!** (25 dəqiqə)\n\nFikrinizi əsas işə yönəldin. Vaxt tamam olanda bildirişlə xəbərdarlıq edəcəyəm.",
-        actionTaken: "focus_timer",
-        isStructuredAction: true,
-      };
-    }
-
-    // 5. Help / Status
-    if (lower === "kömək" || lower === "help" || lower.includes("nə edə bilirsən")) {
-      return {
-        text: `Salam! Mən **Cahangir** — sənin şəxsi masaüstü köməkçinəm.
-
-Mən nə edə bilərəm?
-- **🔔 Xatırlatma və Taymer:** \`"sabah saat 10-da iclas xatırlat"\`, \`"fokus"\`, \`"10 dəqiqəlik taymer"\`
-- **🧠 Yaddaş Saxlamaq:** \`"yadda saxla: qapı kodu 4821-dir"\`
-- **📲 Fayl Transferi:** P2P menyusundan Android telefonunla böyük faylları ultra-sürətlə ötürmək
-- **📋 Pano (Clipboard):** Kompüterdə kopyalanan mətni avtomatik telefona göndərmək
-- **📊 Sistem və Debian İzləmə:** Kompüterin və Debian Atom D525 serverinin real resurslarına baxmaq
-- **🤖 Kod və Analiz:** İstənilən proqramlaşdırma dilində kod yazmaq və sualları cavablandırmaq.`,
-      };
-    }
-
-    // 6. If OpenAI-compatible endpoint is configured, query LLM
-    if (endpointUrl && endpointUrl.trim().length > 0) {
-      try {
-        const response = await fetch(endpointUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-          },
-          body: JSON.stringify({
-            model: "default",
-            messages: [
-              {
-                role: "system",
-                content:
-                  "You are Cahangir, a helpful, intelligent personal AI assistant running on Windows Desktop in a personal mesh network. Respond naturally, accurately, and assist with coding, tasks, reminders, and knowledge.",
-              },
-              { role: "user", content: raw },
-            ],
-            temperature: 0.7,
-          }),
-        });
-
-        if (response.ok) {
-          const json = await response.json();
-          const content =
-            json?.choices?.[0]?.message?.content ||
-            json?.response ||
-            "Modeldən boş cavab gəldi.";
-          return { text: content };
-        }
-      } catch (e: any) {
-        console.warn("External LLM query failed, falling back to local brain", e);
-      }
-    }
-
-    // Default intelligent local response
-    return {
-      text: `Sizin bildirişinizi qəbul etdim: **"${raw}"**.\n\nƏgər xatırlatma yaratmaq istəyirsinizsə \`"xatırlat: ..."\`, yaddaşa yazmaq istəyirsinizsə \`"yadda saxla: ..."\` yazın. Ətraflı dil modeli üçün Ayarlar bölməsindən yerli model endpoint-ini (Ollama / LM Studio) aktivləşdirə bilərsiniz.`,
-    };
   }
+}
+
+function safeMath(s: string): number | null {
+  const tok = s.match(/\d+(?:\.\d+)?|[-+*/^()]/g);
+  if (!tok || tok.join("").length !== s.replace(/\s/g, "").length) return null;
+  let p = 0;
+  const peek = () => tok[p];
+  const prim = (): number => {
+    const x = tok[p++];
+    if (x === "(") { const v = add(); if (tok[p++] !== ")") throw 0; return v; }
+    if (x === "-") return -prim();
+    if (x === undefined || isNaN(+x)) throw 0;
+    return +x;
+  };
+  const pow = (): number => { const b = prim(); if (peek() === "^") { p++; return Math.pow(b, pow()); } return b; };
+  const mul = (): number => { let v = pow(); while (peek() === "*" || peek() === "/") { const o = tok[p++]; const r = pow(); v = o === "*" ? v * r : v / r; } return v; };
+  const add = (): number => { let v = mul(); while (peek() === "+" || peek() === "-") { const o = tok[p++]; const r = mul(); v = o === "+" ? v + r : v - r; } return v; };
+  try { const v = add(); if (p !== tok.length || !isFinite(v)) return null; return +v.toFixed(10); } catch { return null; }
 }

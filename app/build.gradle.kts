@@ -13,8 +13,8 @@ android {
         applicationId = "com.cahangir.assistant"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -33,6 +33,14 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
+    }
+    testOptions {
+        unitTests.all {
+            // Live-server integration test (scripts/integration-test.sh passes these).
+            it.systemProperty("cahangir.testServer", (project.findProperty("cahangir.testServer") ?: "").toString())
+            it.systemProperty("cahangir.testAdmin", (project.findProperty("cahangir.testAdmin") ?: "").toString())
+        }
     }
 }
 
@@ -49,6 +57,7 @@ dependencies {
     implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.androidx.security.crypto)
     testImplementation(libs.junit)
+    testImplementation("org.json:json:20240303")
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.espresso.core)

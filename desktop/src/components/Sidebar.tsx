@@ -11,6 +11,7 @@ import {
   Bell,
   Activity,
   Settings,
+  CalendarCheck,
 } from "lucide-react";
 import { ActiveView } from "../types";
 import { translations, Language } from "../services/i18n";
@@ -34,6 +35,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const navItems = [
     { id: "dashboard" as ActiveView, label: t.navDashboard, icon: LayoutDashboard },
+    { id: "planner" as ActiveView, label: t.navPlanner, icon: CalendarCheck },
     { id: "ai" as ActiveView, label: t.navAi, icon: Sparkles },
     { id: "connect" as ActiveView, label: t.navConnect, icon: Radio },
     { id: "file-transfer" as ActiveView, label: t.navFileTransfer, icon: ArrowDownUp },

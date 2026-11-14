@@ -22,6 +22,9 @@ export const translations = {
     navMemories: "Yaddaş",
     navProjects: "Layihələr",
     navReminders: "Xatırlatmalar",
+    navPlanner: "Planlayıcı",
+    plannerTitle: "Planlayıcı",
+    plannerSubtitle: "Tapşırıqlar, öhdəliklər və gündəlik/həftəlik plan",
     navSystemMonitor: "Sistem Monitoru",
     navSettings: "Ayarlar",
 
@@ -168,6 +171,9 @@ export const translations = {
     navMemories: "Memories",
     navProjects: "Projects",
     navReminders: "Reminders",
+    navPlanner: "Planner",
+    plannerTitle: "Planner",
+    plannerSubtitle: "Tasks, commitments and daily/weekly plan",
     navSystemMonitor: "System Monitor",
     navSettings: "Settings",
 

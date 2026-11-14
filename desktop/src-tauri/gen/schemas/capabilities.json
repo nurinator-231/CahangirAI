@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default permissions for Cahangir Desktop","local":true,"windows":["main"],"permissions":["core:default","dialog:default","notification:default","clipboard-manager:default"]}}
+{"default":{"identifier":"default","description":"Default permissions for Cahangir Desktop. The UI calls only the app's own Rust commands; plugins (dialog, notification, clipboard, autostart) are used from Rust, not exposed to the WebView.","local":true,"windows":["main"],"permissions":["core:default"]}}

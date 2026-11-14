@@ -25,6 +25,12 @@ pub struct SysMonitor {
     networks: Networks,
 }
 
+impl Default for SysMonitor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SysMonitor {
     pub fn new() -> Self {
         let mut sys = System::new_all();

@@ -1,258 +1,147 @@
-import time
-from typing import List
-from fastapi import APIRouter, Depends, Query
+import json
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+
 from app.auth import verify_device_token
-from app.database import get_db
-from app.models import (
-    MemoryItem,
-    ProjectItem,
-    ReminderItem,
-    SyncFullResponse,
-    SyncPullResponse,
-    SyncPushRequest,
-)
+from app.database import current_rev, get_db, now_ms
+from app.entities import ENTITIES, ValidationError
+from app.models import SyncPushRequest
+from app.routers.auth_router import record_device_sync
+from app.sync_engine import apply_push_item, delta_since_rev, delta_since_time
 
 router = APIRouter(prefix="/api/sync", tags=["Synchronization Engine"])
 
+ALL_ENTITIES = list(ENTITIES)
+LEGACY_ENTITIES = ["reminders", "memories", "projects"]
+MAX_PUSH_ITEMS = 5000
 
-@router.post("", response_model=SyncFullResponse)
-def bidirectional_sync(
-    req: SyncPushRequest,
-    device_id: str = Depends(verify_device_token),
-):
+
+@router.post("")
+def bidirectional_sync(req: SyncPushRequest, device_id: str = Depends(verify_device_token)):
+    """Push local changes and pull remote changes in one atomic transaction.
+
+    v2 clients send `since_rev` (server revision cursor) and `base_rev` per item and
+    receive `server_rev`, `acks` (new revision of each accepted item) and `conflicts`.
+    v1 clients (client_timestamp only) keep the original behaviour and response shape.
     """
-    Bi-directional, delta-based synchronization in a single atomic transaction.
-    1. Pushes client's offline changes into server SQLite using Last-Write-Wins.
-    2. Pulls any server changes updated after client_timestamp.
-    """
-    server_now = int(time.time() * 1000)
+    v2 = req.since_rev is not None
+    server_now = now_ms()
+    applied = {e: 0 for e in ALL_ENTITIES}
+    acks = {e: {} for e in ALL_ENTITIES}
+    rejected = []
+    conflicts = []
+    accepted_ids = {e: set() for e in ALL_ENTITIES}
+    kept_server_ids = {e: set() for e in ALL_ENTITIES}
 
-    applied_reminders = 0
-    applied_memories = 0
-    applied_projects = 0
-
-    pushed_reminder_ids = set()
-    pushed_memory_ids = set()
-    pushed_project_ids = set()
+    total = sum(len(getattr(req, e)) for e in ALL_ENTITIES)
+    if total > MAX_PUSH_ITEMS:
+        raise HTTPException(status_code=413, detail=f"Too many items in one push (max {MAX_PUSH_ITEMS}); send in batches.")
 
     with get_db() as conn:
-        # --- 1. Apply Pushed Reminders ---
-        for rem in req.reminders:
-            pushed_reminder_ids.add(rem.id)
-            cur = conn.execute(
-                "SELECT updated_at FROM reminders WHERE id = ?;", (rem.id,)
-            )
-            existing = cur.fetchone()
+        for entity in ALL_ENTITIES:
+            for raw in getattr(req, entity):
+                try:
+                    status, rev, conflict = apply_push_item(conn, entity, raw, device_id)
+                except (ValidationError, ValueError) as e:
+                    rejected.append({"entity": entity, "id": str(raw.get("id", "")), "error": str(e)})
+                    continue
+                item_id = str(raw.get("id"))
+                if status == "applied":
+                    applied[entity] += 1
+                if status in ("applied", "noop"):
+                    accepted_ids[entity].add(item_id)
+                else:
+                    kept_server_ids[entity].add(item_id)
+                acks[entity][item_id] = rev
+                if conflict:
+                    conflicts.append(conflict)
 
-            if not existing:
-                conn.execute(
-                    """
-                    INSERT INTO reminders (id, user_id, text, due, snooze, done, timer, repeat, created_at, updated_at, deleted)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-                    """,
-                    (
-                        rem.id,
-                        rem.user_id,
-                        rem.text,
-                        rem.due,
-                        rem.snooze,
-                        rem.done,
-                        rem.timer,
-                        rem.repeat,
-                        rem.created_at,
-                        rem.updated_at,
-                        rem.deleted,
-                    ),
-                )
-                applied_reminders += 1
-            elif rem.updated_at >= existing["updated_at"]:
-                conn.execute(
-                    """
-                    UPDATE reminders SET
-                        user_id = ?, text = ?, due = ?, snooze = ?, done = ?,
-                        timer = ?, repeat = ?, updated_at = ?, deleted = ?
-                    WHERE id = ?;
-                    """,
-                    (
-                        rem.user_id,
-                        rem.text,
-                        rem.due,
-                        rem.snooze,
-                        rem.done,
-                        rem.timer,
-                        rem.repeat,
-                        rem.updated_at,
-                        rem.deleted,
-                        rem.id,
-                    ),
-                )
-                applied_reminders += 1
+        if v2:
+            delta, cursor, has_more = delta_since_rev(conn, req.since_rev, ALL_ENTITIES)
+            for entity in ALL_ENTITIES:
+                # Items this device just pushed successfully are acknowledged via `acks`.
+                delta[entity] = [r for r in delta[entity] if r["id"] not in accepted_ids[entity]]
+                # Items where the server copy won must reach the client even if older than the cursor.
+                present = {r["id"] for r in delta[entity]}
+                for item_id in kept_server_ids[entity] - present:
+                    row = conn.execute(f"SELECT * FROM {entity} WHERE id = ?;", (item_id,)).fetchone()
+                    if row:
+                        delta[entity].append(dict(row))
+        else:
+            delta = delta_since_time(conn, req.client_timestamp, LEGACY_ENTITIES)
+            pushed = {e: accepted_ids[e] | kept_server_ids[e] for e in LEGACY_ENTITIES}
+            for entity in LEGACY_ENTITIES:
+                delta[entity] = [r for r in delta[entity] if r["id"] not in pushed[entity]]
+            cursor, has_more = current_rev(conn), False
 
-        # --- 2. Apply Pushed Memories ---
-        for mem in req.memories:
-            pushed_memory_ids.add(mem.id)
-            cur = conn.execute(
-                "SELECT updated_at FROM memories WHERE id = ?;", (mem.id,)
-            )
-            existing = cur.fetchone()
-
-            if not existing:
-                conn.execute(
-                    """
-                    INSERT INTO memories (id, user_id, category, fact_text, confidence, source, created_at, updated_at, deleted)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
-                    """,
-                    (
-                        mem.id,
-                        mem.user_id,
-                        mem.category,
-                        mem.fact_text,
-                        mem.confidence,
-                        mem.source,
-                        mem.created_at,
-                        mem.updated_at,
-                        mem.deleted,
-                    ),
-                )
-                applied_memories += 1
-            elif mem.updated_at >= existing["updated_at"]:
-                conn.execute(
-                    """
-                    UPDATE memories SET
-                        user_id = ?, category = ?, fact_text = ?, confidence = ?,
-                        source = ?, updated_at = ?, deleted = ?
-                    WHERE id = ?;
-                    """,
-                    (
-                        mem.user_id,
-                        mem.category,
-                        mem.fact_text,
-                        mem.confidence,
-                        mem.source,
-                        mem.updated_at,
-                        mem.deleted,
-                        mem.id,
-                    ),
-                )
-                applied_memories += 1
-
-        # --- 3. Apply Pushed Projects ---
-        for prj in req.projects:
-            pushed_project_ids.add(prj.id)
-            cur = conn.execute(
-                "SELECT updated_at FROM projects WHERE id = ?;", (prj.id,)
-            )
-            existing = cur.fetchone()
-
-            if not existing:
-                conn.execute(
-                    """
-                    INSERT INTO projects (id, user_id, title, status, notes, created_at, updated_at, deleted)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-                    """,
-                    (
-                        prj.id,
-                        prj.user_id,
-                        prj.title,
-                        prj.status,
-                        prj.notes,
-                        prj.created_at,
-                        prj.updated_at,
-                        prj.deleted,
-                    ),
-                )
-                applied_projects += 1
-            elif prj.updated_at >= existing["updated_at"]:
-                conn.execute(
-                    """
-                    UPDATE projects SET
-                        user_id = ?, title = ?, status = ?, notes = ?,
-                        updated_at = ?, deleted = ?
-                    WHERE id = ?;
-                    """,
-                    (
-                        prj.user_id,
-                        prj.title,
-                        prj.status,
-                        prj.notes,
-                        prj.updated_at,
-                        prj.deleted,
-                        prj.id,
-                    ),
-                )
-                applied_projects += 1
-
-        # --- 4. Query Server Deltas (items updated after client_timestamp not in this push) ---
-        delta_reminders = []
-        cur_rem = conn.execute(
-            "SELECT * FROM reminders WHERE updated_at > ?;", (req.client_timestamp,)
-        )
-        for row in cur_rem.fetchall():
-            if row["id"] not in pushed_reminder_ids:
-                delta_reminders.append(ReminderItem(**dict(row)))
-
-        delta_memories = []
-        cur_mem = conn.execute(
-            "SELECT * FROM memories WHERE updated_at > ?;", (req.client_timestamp,)
-        )
-        for row in cur_mem.fetchall():
-            if row["id"] not in pushed_memory_ids:
-                delta_memories.append(MemoryItem(**dict(row)))
-
-        delta_projects = []
-        cur_prj = conn.execute(
-            "SELECT * FROM projects WHERE updated_at > ?;", (req.client_timestamp,)
-        )
-        for row in cur_prj.fetchall():
-            if row["id"] not in pushed_project_ids:
-                delta_projects.append(ProjectItem(**dict(row)))
-
-        # Log sync activity
+        record_device_sync(conn, device_id, req.p2p)
         conn.execute(
-            """
-            INSERT INTO sync_log (device_id, action, entity_type, entity_id, timestamp)
-            VALUES (?, 'sync', 'batch', ?, ?);
-            """,
-            (device_id, f"r:{applied_reminders},m:{applied_memories},p:{applied_projects}", server_now),
+            "INSERT INTO sync_log (device_id, action, entity_type, entity_id, timestamp) VALUES (?, 'sync', 'batch', ?, ?);",
+            (device_id, json.dumps(applied, separators=(",", ":")), server_now),
         )
 
-    return SyncFullResponse(
-        success=True,
-        server_timestamp=server_now,
-        applied_reminders=applied_reminders,
-        applied_memories=applied_memories,
-        applied_projects=applied_projects,
-        delta=SyncPullResponse(
-            server_timestamp=server_now,
-            reminders=delta_reminders,
-            memories=delta_memories,
-            projects=delta_projects,
-        ),
-    )
+    delta_out = {"server_timestamp": server_now, "server_rev": cursor, "has_more": has_more}
+    delta_out.update(delta)
+    return {
+        "success": True,
+        "protocol": 2 if v2 else 1,
+        "server_timestamp": server_now,
+        "server_rev": cursor,
+        "has_more": has_more,
+        "applied_reminders": applied["reminders"],
+        "applied_memories": applied["memories"],
+        "applied_projects": applied["projects"],
+        "applied": applied,
+        "acks": acks,
+        "conflicts": conflicts,
+        "rejected": rejected,
+        "delta": delta_out,
+    }
 
 
-@router.get("/pull", response_model=SyncPullResponse)
+@router.get("/pull")
 def pull_changes(
-    since: int = Query(0, description="Timestamp in epoch ms to pull changes since"),
+    since: int = Query(0, description="v1: epoch ms cursor"),
+    since_rev: Optional[int] = Query(None, description="v2: server revision cursor"),
     device_id: str = Depends(verify_device_token),
 ):
-    """
-    Pulls delta changes updated since the specified timestamp.
-    """
-    server_now = int(time.time() * 1000)
+    server_now = now_ms()
     with get_db() as conn:
-        cur_rem = conn.execute("SELECT * FROM reminders WHERE updated_at > ?;", (since,))
-        reminders = [ReminderItem(**dict(r)) for r in cur_rem.fetchall()]
+        if since_rev is not None:
+            delta, cursor, has_more = delta_since_rev(conn, since_rev, ALL_ENTITIES)
+        else:
+            delta = delta_since_time(conn, since, LEGACY_ENTITIES)
+            cursor, has_more = current_rev(conn), False
+    out = {"server_timestamp": server_now, "server_rev": cursor, "has_more": has_more}
+    out.update(delta)
+    return out
 
-        cur_mem = conn.execute("SELECT * FROM memories WHERE updated_at > ?;", (since,))
-        memories = [MemoryItem(**dict(r)) for r in cur_mem.fetchall()]
 
-        cur_prj = conn.execute("SELECT * FROM projects WHERE updated_at > ?;", (since,))
-        projects = [ProjectItem(**dict(r)) for r in cur_prj.fetchall()]
+@router.get("/conflicts")
+def list_conflicts(include_resolved: bool = False, limit: int = Query(100, ge=1, le=1000), device_id: str = Depends(verify_device_token)):
+    """Concurrent edits detected during sync, with both versions preserved."""
+    q = "SELECT * FROM sync_conflicts"
+    if not include_resolved:
+        q += " WHERE resolved = 0"
+    q += " ORDER BY created_at DESC LIMIT ?;"
+    with get_db() as conn:
+        rows = conn.execute(q, (limit,)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["kept"] = json.loads(d.pop("kept_json"))
+        d["discarded"] = json.loads(d.pop("discarded_json"))
+        out.append(d)
+    return out
 
-    return SyncPullResponse(
-        server_timestamp=server_now,
-        reminders=reminders,
-        memories=memories,
-        projects=projects,
-    )
+
+@router.post("/conflicts/{conflict_id}/resolve")
+def resolve_conflict(conflict_id: int, device_id: str = Depends(verify_device_token)):
+    """Mark a conflict as reviewed (to restore the discarded version, the client simply
+    saves it again, which creates a normal new edit)."""
+    with get_db() as conn:
+        cur = conn.execute("UPDATE sync_conflicts SET resolved = 1 WHERE id = ?;", (conflict_id,))
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Conflict not found")
+    return {"success": True}

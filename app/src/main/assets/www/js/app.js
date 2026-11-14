@@ -8,7 +8,9 @@
 
   let storage = null;
   try { storage = window.localStorage; storage.setItem('__t', '1'); storage.removeItem('__t'); } catch (e) { storage = null; }
-  const store = window.CahangirStore.create(storage);
+  const store = window.CahangirStore.create(storage, window.CahangirBridge);
+  /* With the native app, Android AlarmManager is the single reminder authority (works with the app closed). */
+  const NATIVE_ALARMS = !!(window.CahangirBridge && window.CahangirBridge.listEntities);
 
   const S = { mode: 'idle', view: 'chat', session: { pending: null }, audioReady: false, speaking: false, utts: [], missedSaid: false };
   const firing = new Map();
@@ -45,7 +47,7 @@
   }
 
   /* ================= naviqasiya ================= */
-  const ALL_VIEWS = ['dash', 'chat', 'ftr', 'clip', 'conn', 'rem', 'mem', 'prj', 'sys', 'set'];
+  const ALL_VIEWS = ['dash', 'chat', 'plan', 'ftr', 'clip', 'conn', 'rem', 'mem', 'prj', 'sys', 'set'];
   function go(v) {
     S.view = v;
     document.querySelectorAll('.nav[data-v]').forEach(b => {
@@ -196,7 +198,7 @@
     const rc = $('rc'); rc.textContent = pend; rc.classList.toggle('zero', !pend);
     $('sy').textContent = store.items('memory').length + ' qeyd';
     const m = store.settings.llm.mode;
-    $('sm').textContent = m === 'endpoint' ? 'LLM serveri' : m === 'device' ? 'Gemma (cihazda)' : 'Qaydalar mühərriki';
+    $('sm').textContent = m === 'router' ? 'AI router (pulsuz)' : m === 'endpoint' ? 'LLM serveri' : m === 'device' ? 'Gemma (cihazda)' : 'Qaydalar mühərriki';
     $('lk').classList.toggle('hide', !store.settings.pin);
   }
   function renderAll() {
@@ -207,9 +209,7 @@
     if (S.view === 'rem') renderRem();
     if (S.view === 'mem') renderMem();
     if (S.view === 'prj') renderPrj();
-    if (S.view === 'ftr') renderFileTransfer();
-    if (S.view === 'clip') renderClipboard();
-    if (S.view === 'conn') renderDevices();
+    if (window.CgUI && ['plan', 'ftr', 'clip', 'conn', 'set'].indexOf(S.view) >= 0) window.CgUI.render(S.view);
     if (S.view === 'sys') renderSystemMonitor();
   }
   store.on(() => { renderAll(); });
@@ -218,7 +218,7 @@
   function bindList(elId, kind) {
     $(elId).addEventListener('click', e => {
       const t = e.target.closest('[data-act]'); if (!t) return;
-      const row = t.closest('[data-id]'); const id = +row.dataset.id; const it = store.get(id); if (!it) return;
+      const row = t.closest('[data-id]'); const id = row.dataset.id; const it = store.get(id); if (!it) return;
       const act = t.dataset.act;
       if (act === 'del') { firing.delete(id); store.remove(id); if (!firing.size) stopRing(); toast('Silindi'); }
       else if (act === 'edit') openEdit(it);
@@ -296,6 +296,7 @@
     else store.update(it.id, { done: true, snooze: null });
   }
   function checkReminders(nowMs) {
+    if (NATIVE_ALARMS) return; // native AlarmManager fires reminders (also when the app is closed)
     const missed = [];
     for (const it of store.items('reminders')) {
       if (it.done || it.firedAt || firing.has(it.id)) continue;
@@ -642,8 +643,11 @@
   });
   $('dClearChat').addEventListener('click', () => { store.clearMessages(); $('chat').innerHTML = ''; toast('Söhbət təmizləndi'); });
   $('dReset').addEventListener('click', () => {
-    if (!confirm('Bütün xatırlatmalar, yaddaş və ayarlar silinəcək. Əminsən?')) return;
-    firing.clear(); stopRing(); store.resetAll(); S.session.pending = null; $('chat').innerHTML = ''; syncSettings(); renderAll(); boot2(); toast('Hamısı silindi');
+    const msg = store.native
+      ? 'Ayarlar və söhbət sıfırlanacaq. Tapşırıqlar, xatırlatmalar və yaddaş qalır (onlar bütün cihazlarla sinxrondur; ayrı-ayrılıqda silin). Əminsən?'
+      : 'Bütün xatırlatmalar, yaddaş və ayarlar silinəcək. Əminsən?';
+    if (!confirm(msg)) return;
+    firing.clear(); stopRing(); store.resetAll(); S.session.pending = null; $('chat').innerHTML = ''; syncSettings(); renderAll(); boot2(); toast(store.native ? 'Ayarlar sıfırlandı' : 'Hamısı silindi');
   });
 
   /* ================= P2P, Dashboard, Fayl Ötürmə, Pano, Cihazlar ================= */
@@ -709,156 +713,6 @@
     }
   }
 
-  function renderFileTransfer() {
-    if (window.cahangirGetP2pStatus) {
-      const st = window.cahangirGetP2pStatus();
-      if ($('ftrPeerIp') && !$('ftrPeerIp').value) {
-        const lastIp = localStorage.getItem('last_p2p_peer_ip') || '';
-        if (lastIp) $('ftrPeerIp').value = lastIp;
-      }
-    }
-
-    const history = window.cahangirGetTransferHistory ? window.cahangirGetTransferHistory() : [];
-    const el = $('ftrList');
-    if (el) {
-      if (!history || history.length === 0) {
-        el.innerHTML = '<p class="note">Fayl ötürmə tarixçəsi boşdur.</p>';
-      } else {
-        el.innerHTML = history.map(t => `
-          <div class="transfer-item">
-            <div class="thdr">
-              <span class="tname">${esc(t.filename)}</span>
-              <span class="${t.status === 'completed' ? 'ok' : 'err'}" style="font-size:12px; font-weight:600;">
-                ${t.status === 'completed' ? (t.direction === 'send' ? '📤 Göndərildi' : '📥 Qəbul edildi') : '⚠️ Uğursuz'}
-              </span>
-            </div>
-            <div class="tmeta">
-              <span>${fmtBytes(t.file_size)} · Sürət: ${t.speed_mbps ? t.speed_mbps.toFixed(2) + ' MB/s' : '—'}</span>
-              <span>${new Date(t.timestamp).toLocaleDateString()} ${new Date(t.timestamp).toLocaleTimeString()}</span>
-            </div>
-            ${t.sha256 ? `<div style="font-size:10px; color:#64748b; font-family:monospace; overflow:hidden; text-overflow:ellipsis;">SHA-256: ${esc(t.sha256)}</div>` : ''}
-          </div>
-        `).join('');
-      }
-    }
-  }
-
-  function renderClipboard() {
-    if ($('clipPeerIp') && !$('clipPeerIp').value) {
-      const lastIp = localStorage.getItem('last_p2p_peer_ip') || '';
-      if (lastIp) $('clipPeerIp').value = lastIp;
-    }
-    const el = $('clipList');
-    if (el) {
-      if (!clipHistory || clipHistory.length === 0) {
-        el.innerHTML = '<p class="note">Pano tarixçəsi boşdur.</p>';
-      } else {
-        el.innerHTML = clipHistory.map((item, idx) => `
-          <div class="clip-item">
-            <div class="ctext">${esc(item.text)}</div>
-            <div class="cmeta">
-              <span>${esc(item.origin)} · ${new Date(item.timestamp).toLocaleTimeString()}</span>
-              <button class="btn small ghost" data-copy-clip="${idx}">Kopyala</button>
-            </div>
-          </div>
-        `).join('');
-
-        el.querySelectorAll('[data-copy-clip]').forEach(btn => {
-          btn.addEventListener('click', e => {
-            const idx = +e.target.dataset.copyClip;
-            const item = clipHistory[idx];
-            if (item && window.cahangirCopyClipboard) {
-              window.cahangirCopyClipboard(item.text);
-              toast('✓ Kopyalandı');
-            }
-          });
-        });
-      }
-    }
-  }
-
-  async function renderDevices() {
-    const el = $('connDeviceList');
-    if (!el) return;
-    el.innerHTML = '<p class="note">Cihazlar yüklənir...</p>';
-
-    const serverSt = window.cahangirGetServerStatus ? window.cahangirGetServerStatus() : null;
-    const serverUrl = serverSt ? serverSt.serverUrl : '';
-    const adminToken = (store.settings && store.settings.adminToken) || '';
-
-    if (!serverUrl) {
-      el.innerHTML = '<p class="note">Debian server URL təyin olunmayıb. Ayarlar bölməsindən serverə qoşulun.</p>';
-      return;
-    }
-
-    const res = window.cahangirListDevices ? window.cahangirListDevices(serverUrl, adminToken) : null;
-    if (res && res.success && Array.isArray(res.devices)) {
-      cachedDevices = res.devices;
-      if (cachedDevices.length === 0) {
-        el.innerHTML = '<p class="note">Qoşulmuş cihaz tapılmadı.</p>';
-      } else {
-        el.innerHTML = cachedDevices.map(d => {
-          const isOnline = d.is_revoked === 0;
-          return `
-            <div class="device-card">
-              <div class="dhdr">
-                <span class="dname">${esc(d.device_name || d.device_id)}</span>
-                <span class="${isOnline ? 'badge-online' : 'badge-revoked'}">
-                  ${isOnline ? '● Aktiv' : '○ Ləğv edilib'}
-                </span>
-              </div>
-              <div style="font-size:12px; color:var(--mut);">
-                <div>ID: ${esc(d.device_id)}</div>
-                ${d.ip_address ? `<div>IP: <b>${esc(d.ip_address)}</b></div>` : ''}
-                <div>Son fəaliyyət: ${d.last_seen ? new Date(d.last_seen).toLocaleString() : 'naməlum'}</div>
-              </div>
-              <div class="two" style="margin-top:6px;">
-                <button class="btn small" data-send-file-ip="${esc(d.ip_address || '')}">📁 Fayl Göndər</button>
-                <button class="btn small" data-send-clip-ip="${esc(d.ip_address || '')}">📋 Pano Göndər</button>
-              </div>
-              ${isOnline ? `<button class="btn danger small ghost" data-revoke-id="${esc(d.device_id)}" style="margin-top:4px;">Girişi Ləğv Et</button>` : ''}
-            </div>
-          `;
-        }).join('');
-
-        el.querySelectorAll('[data-send-file-ip]').forEach(btn => {
-          btn.addEventListener('click', e => {
-            const ip = e.target.dataset.sendFileIp;
-            if (ip && $('ftrPeerIp')) $('ftrPeerIp').value = ip;
-            go('ftr');
-          });
-        });
-
-        el.querySelectorAll('[data-send-clip-ip]').forEach(btn => {
-          btn.addEventListener('click', e => {
-            const ip = e.target.dataset.sendClipIp;
-            if (ip && $('clipPeerIp')) $('clipPeerIp').value = ip;
-            go('clip');
-          });
-        });
-
-        el.querySelectorAll('[data-revoke-id]').forEach(btn => {
-          btn.addEventListener('click', e => {
-            const devId = e.target.dataset.revokeId;
-            if (confirm(`"${devId}" cihazının girişini ləğv etmək istəyirsiniz?`)) {
-              if (window.cahangirRevokeDevice) {
-                const r = window.cahangirRevokeDevice(serverUrl, adminToken, devId);
-                if (r && r.success) {
-                  toast('Cihaz ləğv edildi');
-                  renderDevices();
-                } else {
-                  toast('Xəta: ' + (r ? r.error : 'Ləğv edilmədi'));
-                }
-              }
-            }
-          });
-        });
-      }
-    } else {
-      el.innerHTML = '<p class="note" style="color:var(--bad);">Cihazlar siyahısı alına bilmədi: ' + (res ? res.error : 'Serverə əlaqə yoxdur') + '</p>';
-    }
-  }
-
   function renderSystemMonitor() {
     if (!window.cahangirGetSystemMetrics) return;
     const m = window.cahangirGetSystemMetrics();
@@ -879,129 +733,8 @@
     if ($('sysServerUrl')) $('sysServerUrl').textContent = m.server_url || 'Ayarlanmayıb';
   }
 
-  /* ================= P2P Event Bindings ================= */
-  window.onP2pTransferStarted = function(id, name, size, sender) {
-    const box = $('ftrProgBox');
-    if (box) box.classList.remove('hide');
-    if ($('ftrStatusText')) $('ftrStatusText').textContent = 'Ötürülür: ' + name;
-    if ($('ftrPercentText')) $('ftrPercentText').textContent = '0%';
-    if ($('ftrProgressBar')) $('ftrProgressBar').style.width = '0%';
-    if ($('ftrBytesText')) $('ftrBytesText').textContent = '0 / ' + fmtBytes(size);
-    toast('Ötürmə başladı: ' + name);
-  };
-
-  window.onP2pTransferProgress = function(id, sent, total, percent, speed) {
-    const box = $('ftrProgBox');
-    if (box && box.classList.contains('hide')) box.classList.remove('hide');
-    if ($('ftrPercentText')) $('ftrPercentText').textContent = Math.round(percent) + '%';
-    if ($('ftrProgressBar')) $('ftrProgressBar').style.width = percent + '%';
-    if ($('ftrSpeedText')) $('ftrSpeedText').textContent = speed.toFixed(2) + ' MB/s';
-    if ($('ftrBytesText')) $('ftrBytesText').textContent = fmtBytes(sent) + ' / ' + fmtBytes(total);
-  };
-
-  window.onP2pTransferComplete = function(id, name, size, speed, sha, path) {
-    const box = $('ftrProgBox');
-    if (box) box.classList.add('hide');
-    toast('✓ Fayl tamamlandı: ' + name);
-    if (S.view === 'ftr') renderFileTransfer();
-    if (S.view === 'dash') renderDashboard();
-  };
-
-  window.onP2pTransferFailed = function(err) {
-    const box = $('ftrProgBox');
-    if (box) box.classList.add('hide');
-    toast('Xəta: ' + err);
-    if (S.view === 'ftr') renderFileTransfer();
-  };
-
-  window.onP2pClipboardReceived = function(text, origin, hash) {
-    clipHistory.unshift({
-      text: text,
-      origin: origin || 'Kompüter',
-      timestamp: Date.now()
-    });
-    if (clipHistory.length > 30) clipHistory.pop();
-    toast('📋 Pano mətni alındı: ' + origin);
-    if (S.view === 'clip') renderClipboard();
-  };
-
-  // Button hooks
   if ($('dGoFtrBtn')) $('dGoFtrBtn').addEventListener('click', () => go('ftr'));
 
-  if ($('ftrPickBtn')) $('ftrPickBtn').addEventListener('click', () => {
-    const ip = ($('ftrPeerIp').value || '').trim();
-    const port = +$('ftrPeerPort').value || 8767;
-    if (!ip) {
-      alert('Zəhmət olmasa qarşı tərəfin IP ünvanını daxil edin.');
-      return;
-    }
-    localStorage.setItem('last_p2p_peer_ip', ip);
-    if (window.cahangirPickAndSendFile) {
-      window.cahangirPickAndSendFile(ip, port);
-    }
-  });
-
-  if ($('ftrCancelBtn')) $('ftrCancelBtn').addEventListener('click', () => {
-    if (window.cahangirCancelTransfer) window.cahangirCancelTransfer();
-    toast('Ötürmə dayandırıldı');
-    if ($('ftrProgBox')) $('ftrProgBox').classList.add('hide');
-  });
-
-  if ($('ftrClearBtn')) $('ftrClearBtn').addEventListener('click', () => {
-    if (confirm('Fayl ötürmə tarixçəsini təmizləmək istəyirsiniz?')) {
-      if (window.cahangirClearTransferHistory) window.cahangirClearTransferHistory();
-      renderFileTransfer();
-      toast('Tarixçə təmizləndi');
-    }
-  });
-
-  if ($('clipPasteBtn')) $('clipPasteBtn').addEventListener('click', () => {
-    if (window.cahangirGetClipboard) {
-      const txt = window.cahangirGetClipboard();
-      if (txt) {
-        $('clipText').value = txt;
-        toast('Panodan oxundu');
-      } else {
-        toast('Pano boşdur');
-      }
-    }
-  });
-
-  if ($('clipSendBtn')) $('clipSendBtn').addEventListener('click', () => {
-    const ip = ($('clipPeerIp').value || '').trim();
-    const txt = ($('clipText').value || '').trim();
-    if (!ip || !txt) {
-      alert('Zəhmət olmasa IP və mətni daxil edin.');
-      return;
-    }
-    localStorage.setItem('last_p2p_peer_ip', ip);
-    const statusTxt = $('clipSendStatus');
-    if (statusTxt) statusTxt.textContent = 'Göndərilir...';
-    if (window.cahangirSendClipboard) {
-      const res = window.cahangirSendClipboard(ip, 8767, txt);
-      if (res && res.success) {
-        if (statusTxt) {
-          statusTxt.textContent = '✓ Uğurla göndərildi!';
-          statusTxt.style.color = '#22e07a';
-        }
-        clipHistory.unshift({
-          text: txt,
-          origin: 'Bu Telefon (Göndərilib)',
-          timestamp: Date.now()
-        });
-        renderClipboard();
-        toast('✓ Pano göndərildi');
-        $('clipText').value = '';
-      } else {
-        if (statusTxt) {
-          statusTxt.textContent = 'Xəta: ' + (res ? res.error : 'Göndərilmədi');
-          statusTxt.style.color = '#ff6b81';
-        }
-      }
-    }
-  });
-
-  if ($('connRefreshBtn')) $('connRefreshBtn').addEventListener('click', renderDevices);
   if ($('sysRefreshBtn')) $('sysRefreshBtn').addEventListener('click', renderSystemMonitor);
 
   /* ---- ekranı oyaq saxla ---- */
@@ -1089,7 +822,8 @@
     boot2();
     requestAnimationFrame(draw);
   }
-  window.__cg = { store, handleUser, tick, firing, env, fire, ackAll, go, speak };
+  window.__cg = { store, handleUser, tick, firing, env, fire, ackAll, go, speak, view: () => S.view };
+  window.toast = toast; window.setMode = setMode;
   init();
 })();
 

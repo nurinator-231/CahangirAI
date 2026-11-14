@@ -1,283 +1,135 @@
-import React, { useState, useEffect } from "react";
-import { Folder, Upload, XCircle, CheckCircle2, History, ShieldAlert } from "lucide-react";
-import { TransferItem } from "../types";
-import { api } from "../services/api";
-import { translations, Language } from "../services/i18n";
+import React, { useEffect, useState } from "react";
+import { FileUp, RefreshCw, Trash2, XCircle } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
+import { DeviceItem, TransferItem } from "../types";
+import { api, errText } from "../services/api";
+import { Language } from "../services/i18n";
 
-interface FileTransferProps {
+interface Props {
   lang: Language;
   transfers: TransferItem[];
+  devices: DeviceItem[];
+  myDeviceId: string;
   onRefreshTransfers: () => void;
-  selectedPeerIp?: string;
-  defaultDownloadDir: string;
+  onRefreshDevices: () => void;
+  selectedPeerIp: string;
+  p2pReady: boolean;
+  toast: (type: "info" | "success" | "warning" | "error", text: string) => void;
 }
 
-export const FileTransferView: React.FC<FileTransferProps> = ({
-  lang,
-  transfers,
-  onRefreshTransfers,
-  selectedPeerIp,
-  defaultDownloadDir,
-}) => {
-  const t = translations[lang];
+const fmtBytes = (b: number) => (b > 1 << 30 ? (b / (1 << 30)).toFixed(2) + " GB" : b > 1 << 20 ? (b / (1 << 20)).toFixed(1) + " MB" : b > 1024 ? (b / 1024).toFixed(0) + " KB" : b + " B");
 
-  const [filePath, setFilePath] = useState("");
-  const [peerIp, setPeerIp] = useState(selectedPeerIp || localStorage.getItem("cahangir_last_peer_ip") || "");
-  const [peerPort, setPeerPort] = useState(8767);
-  const [isSending, setIsSending] = useState(false);
-  const [progressPercent, setProgressPercent] = useState(0);
-  const [currentSpeed, setCurrentSpeed] = useState(0);
-  const [bytesSent, setBytesSent] = useState(0);
-  const [totalBytes, setTotalBytes] = useState(0);
-  const [statusMsg, setStatusMsg] = useState("");
+export const FileTransferView: React.FC<Props> = ({ lang, transfers, devices, myDeviceId, onRefreshTransfers, onRefreshDevices, selectedPeerIp, p2pReady, toast }) => {
+  const en = lang === "en";
+  const peers = devices.filter((d) => d.device_id !== myDeviceId && (d.p2p_hosts?.length || 0) > 0 && (d.p2p_port || 0) > 0);
+  const [peerKey, setPeerKey] = useState<string>("");
+  const [manualHost, setManualHost] = useState(selectedPeerIp);
+  const [manualPort, setManualPort] = useState(8767);
+  const [progress, setProgress] = useState<{ dir: string; percent: number; speed: number; name: string } | null>(null);
+  const [sending, setSending] = useState(false);
+  const [pingResult, setPingResult] = useState<string>("");
 
   useEffect(() => {
-    if (selectedPeerIp) {
-      setPeerIp(selectedPeerIp);
+    const subs = [
+      listen<any>("p2p://transfer-started", (e) => setProgress({ dir: e.payload.direction, percent: 0, speed: 0, name: e.payload.filename })),
+      listen<any>("p2p://transfer-progress", (e) => setProgress((p) => ({ dir: e.payload.direction, percent: e.payload.percent, speed: e.payload.speed_mbps, name: p?.name || "" }))),
+      listen<any>("p2p://transfer-complete", () => { setProgress(null); onRefreshTransfers(); }),
+      listen<any>("p2p://transfer-failed", () => { setProgress(null); onRefreshTransfers(); }),
+    ];
+    return () => subs.forEach((p) => p.then((f) => f()));
+  }, []);
+
+  const target = (): { host: string; port: number; name: string } | null => {
+    if (peerKey && peerKey !== "manual") {
+      const [id, host] = peerKey.split("|");
+      const d = peers.find((p) => p.device_id === id);
+      return d ? { host, port: d.p2p_port || 8767, name: d.device_name } : null;
     }
-  }, [selectedPeerIp]);
+    return manualHost.trim() ? { host: manualHost.trim(), port: manualPort, name: manualHost.trim() } : null;
+  };
 
-  useEffect(() => {
-    // Listen for incoming and outgoing transfer progress events from Rust
-    const unlistenProgress = listen<any>("p2p://transfer-progress", (event) => {
-      const p = event.payload;
-      setProgressPercent(p.percent || 0);
-      setCurrentSpeed(p.speed_mbps || 0);
-      setBytesSent(p.sent || p.received || 0);
-      setTotalBytes(p.total || 0);
-      setStatusMsg(`Ötürülür... ${p.speed_mbps.toFixed(2)} MB/s`);
-    });
-
-    const unlistenComplete = listen<any>("p2p://transfer-complete", (event) => {
-      const p = event.payload;
-      setIsSending(false);
-      setProgressPercent(100);
-      setStatusMsg(`Tamamlandı! SHA-256: ${p.sha256.substring(0, 16)}...`);
-      onRefreshTransfers();
-    });
-
-    return () => {
-      unlistenProgress.then((f) => f());
-      unlistenComplete.then((f) => f());
-    };
-  }, [onRefreshTransfers]);
-
-  const handlePickFile = async () => {
+  const ping = async () => {
+    const tg = target();
+    if (!tg) return;
     try {
-      const picked = await api.pickFileDialog();
-      if (picked) {
-        setFilePath(picked);
-      }
+      const r = await api.pingPeer(tg.host, tg.port);
+      setPingResult(`✓ ${r.device_name} (${r.platform || "?"})`);
     } catch (e) {
-      console.error("File pick error", e);
+      setPingResult(`✗ ${errText(e)}`);
     }
   };
 
-  const handleStartSend = async () => {
-    if (!filePath || !peerIp) {
-      alert("Zəhmət olmasa faylı və qarşı tərəfin IP ünvanını daxil edin.");
+  const send = async () => {
+    const tg = target();
+    if (!tg) {
+      toast("warning", en ? "Choose a device." : "Cihaz seçin.");
       return;
     }
-
-    setIsSending(true);
-    setProgressPercent(0);
-    setCurrentSpeed(0);
-    setStatusMsg("Qarşı tərəflə əlaqə qurulur...");
-    localStorage.setItem("cahangir_last_peer_ip", peerIp.trim());
-
+    const path = await api.pickFileDialog();
+    if (!path) return;
+    setSending(true);
     try {
-      const res = await api.startFileSend(peerIp.trim(), peerPort, filePath);
-      if (!res.success) {
-        setStatusMsg(`Xəta: ${res.error || "Ötürmə uğursuz oldu"}`);
-        setIsSending(false);
-      } else {
-        setStatusMsg("Uğurla tamamlandı!");
-        setIsSending(false);
-        onRefreshTransfers();
-      }
-    } catch (e: any) {
-      setStatusMsg(`Xəta: ${e?.message || e}`);
-      setIsSending(false);
+      const r = await api.startFileSend(tg.host, tg.port, path, tg.name);
+      if (r.success) toast("success", `${r.filename}: ${en ? "sent and verified" : "göndərildi və yoxlanıldı"} (SHA-256 ${r.sha256.slice(0, 12)}…)`);
+      else toast(r.canceled ? "warning" : "error", r.error || "?");
+    } catch (e) {
+      toast("error", errText(e));
+    } finally {
+      setSending(false);
+      setProgress(null);
+      onRefreshTransfers();
     }
-  };
-
-  const handleCancel = async () => {
-    await api.cancelFileTransfer();
-    setIsSending(false);
-    setStatusMsg("İstifadəçi tərəfindən ləğv edildi.");
   };
 
   return (
     <div className="content-view">
-      {/* Sender Panel */}
-      <div className="card">
-        <h3 style={{ fontSize: "1.1rem", marginBottom: "16px" }}>{t.ftTitle}</h3>
-
-        <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-          {/* File Picker */}
-          <div>
-            <label style={{ fontSize: "0.82rem", color: "var(--text-muted)", display: "block", marginBottom: "6px" }}>
-              Göndəriləcək Fayl
-            </label>
-            <div style={{ display: "flex", gap: "10px" }}>
-              <input
-                type="text"
-                placeholder="Fayl seçilməyib..."
-                value={filePath}
-                readOnly
-              />
-              <button className="btn-secondary" onClick={handlePickFile} style={{ flexShrink: 0 }}>
-                <Folder size={16} />
-                <span>{t.ftSelectFile}</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Peer IP & Port */}
-          <div style={{ display: "grid", gridTemplateColumns: "3fr 1fr", gap: "12px" }}>
-            <div>
-              <label style={{ fontSize: "0.82rem", color: "var(--text-muted)", display: "block", marginBottom: "6px" }}>
-                {t.ftPeerIp}
-              </label>
-              <input
-                type="text"
-                value={peerIp}
-                onChange={(e) => setPeerIp(e.target.value)}
-                placeholder="100.x.y.z"
-              />
-            </div>
-            <div>
-              <label style={{ fontSize: "0.82rem", color: "var(--text-muted)", display: "block", marginBottom: "6px" }}>
-                {t.ftPeerPort}
-              </label>
-              <input
-                type="number"
-                value={peerPort}
-                onChange={(e) => setPeerPort(parseInt(e.target.value) || 8767)}
-              />
-            </div>
-          </div>
-
-          {/* Progress Section */}
-          {isSending && (
-            <div style={{ background: "var(--bg-secondary)", padding: "14px", borderRadius: "10px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px", fontSize: "0.85rem" }}>
-                <span>{statusMsg}</span>
-                <span style={{ fontWeight: 600 }}>{progressPercent.toFixed(1)}%</span>
-              </div>
-              <div className="progress-bar-bg">
-                <div className="progress-bar-fill" style={{ width: `${progressPercent}%` }} />
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", marginTop: "8px", fontSize: "0.78rem", color: "var(--text-muted)" }}>
-                <span>
-                  {(bytesSent / (1024 * 1024)).toFixed(1)} MB / {(totalBytes / (1024 * 1024)).toFixed(1)} MB
-                </span>
-                <span>{currentSpeed.toFixed(2)} MB/s</span>
-              </div>
-            </div>
-          )}
-
-          {/* Action buttons */}
-          <div style={{ display: "flex", gap: "10px", marginTop: "4px" }}>
-            <button
-              className="btn-primary"
-              onClick={handleStartSend}
-              disabled={isSending || !filePath}
-            >
-              <Upload size={16} />
-              <span>{t.ftSendNow}</span>
-            </button>
-            {isSending && (
-              <button className="btn-secondary" onClick={handleCancel}>
-                <XCircle size={16} />
-                <span>{t.ftCancel}</span>
-              </button>
-            )}
-          </div>
-        </div>
+      <div>
+        <h2 style={{ fontSize: "1.2rem", fontWeight: 700 }}>{en ? "File transfer" : "Fayl ötürmə"}</h2>
+        <p className="muted">{en ? "Direct, authenticated transfer to your paired devices (LAN or Tailscale), verified with SHA-256 on both sides." : "Cütləşdirilmiş cihazlara birbaşa, təsdiqlənmiş ötürmə (LAN və ya Tailscale); hər iki tərəfdə SHA-256 ilə yoxlanılır."}</p>
       </div>
-
-      {/* Receiver Info */}
-      <div className="card" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div>
-          <div style={{ fontSize: "0.9rem", fontWeight: 600 }}>Qəbul Edilən Faylların Qovluğu</div>
-          <div style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginTop: "2px" }}>
-            {defaultDownloadDir}
-          </div>
+      {!p2pReady && <div className="conflict">{en ? "This PC has no P2P key yet. Pair with the Debian server and sync once." : "Bu kompüterin hələ P2P açarı yoxdur. Debian serverlə cütləşdirib bir dəfə sinxron edin."}</div>}
+      <div className="card col">
+        <div className="row">
+          <select value={peerKey} onChange={(e) => setPeerKey(e.target.value)} style={{ minWidth: 280 }}>
+            <option value="">{en ? "— choose a paired device —" : "— cütləşdirilmiş cihaz seçin —"}</option>
+            {peers.flatMap((d) => (d.p2p_hosts || []).map((h) => (
+              <option key={d.device_id + h} value={`${d.device_id}|${h}`}>{d.device_name} · {h}:{d.p2p_port} {h.startsWith("100.") ? "(Tailscale)" : "(LAN)"}</option>
+            )))}
+            <option value="manual">{en ? "Enter address manually…" : "Ünvanı əl ilə daxil et…"}</option>
+          </select>
+          <button className="btn-icon" title="Refresh" onClick={onRefreshDevices}><RefreshCw size={14} /></button>
+          {peerKey === "manual" && <>
+            <input type="text" placeholder="192.168.1.20" value={manualHost} onChange={(e) => setManualHost(e.target.value)} />
+            <input type="number" value={manualPort} onChange={(e) => setManualPort(+e.target.value || 8767)} style={{ width: 100 }} />
+          </>}
+          <button className="btn-secondary" onClick={ping}>{en ? "Check" : "Yoxla"}</button>
+          <button className="btn-primary" disabled={sending || !p2pReady} onClick={send}><FileUp size={15} /> {en ? "Choose file & send" : "Fayl seç və göndər"}</button>
         </div>
-        <span style={{ fontSize: "0.8rem", color: "var(--accent-blue)", fontWeight: 600 }}>
-          P2P Dinləyici Aktivdir (:8767)
-        </span>
-      </div>
-
-      {/* Transfer History Table */}
-      <div className="card">
-        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "16px" }}>
-          <History size={18} color="#38bdf8" />
-          <h3 style={{ fontSize: "1rem" }}>{t.ftTransferHistory}</h3>
-        </div>
-
-        {transfers.length === 0 ? (
-          <p style={{ color: "var(--text-muted)", fontSize: "0.88rem" }}>{t.noRecentTransfers}</p>
-        ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}>
-              <thead>
-                <tr style={{ textAlign: "left", borderBottom: "1px solid var(--border-color)", color: "var(--text-muted)" }}>
-                  <th style={{ padding: "8px 12px" }}>Fayl</th>
-                  <th style={{ padding: "8px 12px" }}>Ölçü</th>
-                  <th style={{ padding: "8px 12px" }}>İstiqamət</th>
-                  <th style={{ padding: "8px 12px" }}>Sürət</th>
-                  <th style={{ padding: "8px 12px" }}>Status</th>
-                  <th style={{ padding: "8px 12px" }}>Tarix</th>
-                </tr>
-              </thead>
-              <tbody>
-                {transfers.map((tr) => (
-                  <tr key={tr.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
-                    <td style={{ padding: "10px 12px", fontWeight: 600 }}>{tr.filename}</td>
-                    <td style={{ padding: "10px 12px" }}>
-                      {(tr.file_size / (1024 * 1024)).toFixed(2)} MB
-                    </td>
-                    <td style={{ padding: "10px 12px" }}>
-                      {tr.direction === "send" ? "Windows → Android" : "Android → Windows"}
-                    </td>
-                    <td style={{ padding: "10px 12px" }}>{tr.speed_mbps.toFixed(2)} MB/s</td>
-                    <td style={{ padding: "10px 12px" }}>
-                      <span
-                        style={{
-                          fontSize: "0.75rem",
-                          padding: "2px 8px",
-                          borderRadius: "4px",
-                          backgroundColor:
-                            tr.status === "completed"
-                              ? "rgba(16, 185, 129, 0.2)"
-                              : "rgba(239, 68, 68, 0.2)",
-                          color: tr.status === "completed" ? "#10b981" : "#ef4444",
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: "4px",
-                        }}
-                      >
-                        {tr.status === "completed" ? (
-                          <CheckCircle2 size={12} />
-                        ) : (
-                          <ShieldAlert size={12} />
-                        )}
-                        {tr.status}
-                      </span>
-                    </td>
-                    <td style={{ padding: "10px 12px", color: "var(--text-muted)" }}>
-                      {new Date(tr.timestamp).toLocaleString("az-AZ")}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        {pingResult && <div className="muted">{pingResult}</div>}
+        {progress && (
+          <div className="col">
+            <div className="muted">{progress.dir === "send" ? "↑" : "↓"} {progress.name} — {progress.percent.toFixed(0)}% · {progress.speed.toFixed(1)} MB/s</div>
+            <div className="progress-bar-bg"><div className="progress-bar-fill" style={{ width: `${progress.percent}%` }} /></div>
+            {progress.dir === "send" && <button className="btn-secondary btn-small" onClick={() => api.cancelFileTransfer()}><XCircle size={13} /> {en ? "Cancel" : "Ləğv et"}</button>}
           </div>
         )}
       </div>
+      <div className="row" style={{ justifyContent: "space-between" }}>
+        <b>{en ? "History" : "Tarixçə"}</b>
+        <button className="btn-secondary btn-small" onClick={() => api.clearTransferHistory().then(onRefreshTransfers)}><Trash2 size={13} /> {en ? "Clear" : "Təmizlə"}</button>
+      </div>
+      {transfers.map((tr) => (
+        <div className="item" key={tr.id}>
+          <div className="grow">
+            <div className="title">{tr.direction === "send" ? "↑" : "↓"} {tr.filename}</div>
+            <div className="muted">
+              {fmtBytes(tr.file_size)} · {tr.peer_device} · {new Date(tr.timestamp).toLocaleString(en ? "en-GB" : "az-AZ")} · {tr.speed_mbps.toFixed(1)} MB/s
+              {tr.sha256 ? ` · SHA-256 ${tr.sha256.slice(0, 16)}…` : ""}
+            </div>
+          </div>
+          <span className={`pill ${tr.status === "completed" ? "ok" : tr.status === "failed" ? "urgent" : ""}`}>{tr.status}</span>
+        </div>
+      ))}
     </div>
   );
 };

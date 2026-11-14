@@ -2,234 +2,156 @@ package com.cahangir.assistant.p2p
 
 import android.content.Context
 import android.net.Uri
-import android.util.Log
 import com.cahangir.assistant.security.SecurityManager
 import org.json.JSONObject
 import java.io.InputStream
-import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicBoolean
 
+/** Authenticated sender for files and clipboard text (same protocol as the Windows app). */
 class P2pClient(private val context: Context) {
-    private val TAG = "CahangirP2pClient"
     private val cancelFlag = AtomicBoolean(false)
     private val storage = P2pTransferStorage(context)
-    private val securityManager = SecurityManager(context)
+    private val security = SecurityManager(context)
 
-    fun cancelTransfer() {
-        cancelFlag.set(true)
-    }
+    companion object {
+        const val CHUNK = 1024 * 1024
 
-    fun pingPeer(peerIp: String, peerPort: Int): Result<JSONObject> {
-        return try {
-            val cleanIp = peerIp.trim()
-            val url = URL("http://$cleanIp:$peerPort/p2p/ping")
-            val conn = url.openConnection() as HttpURLConnection
-            conn.connectTimeout = 3000
-            conn.readTimeout = 3000
-            conn.requestMethod = "GET"
-
-            val code = conn.responseCode
-            if (code == 200) {
-                val body = conn.inputStream.bufferedReader().readText()
-                Result.success(JSONObject(body))
-            } else {
-                Result.failure(Exception("HTTP $code"))
+        /** Pure helper used by tests and by the client. */
+        fun signedRequest(meshKey: String, deviceId: String, base: String, method: String, pathAndQuery: String, body: ByteArray, contentType: String = "application/json", timeoutMs: Int = 15000): Pair<Int, String> {
+            if (meshKey.isBlank()) throw IllegalStateException("P2P açarı yoxdur — əvvəlcə serverə qoşulub sinxron edin.")
+            val path = pathAndQuery.substringBefore('?')
+            val ts = System.currentTimeMillis()
+            val nonce = P2pAuth.newNonce()
+            val sig = P2pAuth.signature(meshKey, method, path, ts, nonce, body) ?: throw IllegalStateException("invalid mesh key")
+            val conn = URL(base + pathAndQuery).openConnection() as HttpURLConnection
+            try {
+                conn.requestMethod = method
+                conn.connectTimeout = 8000
+                conn.readTimeout = timeoutMs
+                conn.setRequestProperty("X-Cahangir-Device", deviceId)
+                conn.setRequestProperty("X-Cahangir-Ts", ts.toString())
+                conn.setRequestProperty("X-Cahangir-Nonce", nonce)
+                conn.setRequestProperty("X-Cahangir-Sig", sig)
+                if (method == "POST") {
+                    conn.doOutput = true
+                    conn.setRequestProperty("Content-Type", contentType)
+                    conn.setFixedLengthStreamingMode(body.size)
+                    conn.outputStream.use { it.write(body) }
+                }
+                val code = conn.responseCode
+                val text = (if (code in 200..299) conn.inputStream else conn.errorStream)?.bufferedReader()?.use { it.readText() } ?: ""
+                return code to text
+            } finally {
+                conn.disconnect()
             }
-        } catch (e: Exception) {
-            Result.failure(e)
         }
+
+        fun base(host: String, port: Int) = if (host.contains(':') && !host.startsWith("[")) "http://[$host]:$port" else "http://${host.trim()}:$port"
     }
 
-    fun sendClipboard(peerIp: String, peerPort: Int, text: String): Result<String> {
-        return try {
-            val cleanIp = peerIp.trim()
-            val url = URL("http://$cleanIp:$peerPort/p2p/clipboard")
-            val hash = hashText(text)
+    fun cancelTransfer() = cancelFlag.set(true)
 
-            val body = JSONObject().apply {
-                put("text", text)
-                put("origin_device", securityManager.deviceName)
-                put("hash", hash)
-            }.toString()
+    private fun req(host: String, port: Int, method: String, path: String, body: ByteArray = ByteArray(0), ct: String = "application/json", timeout: Int = 15000) =
+        signedRequest(security.meshKey, security.deviceId, base(host, port), method, path, body, ct, timeout)
 
-            val conn = url.openConnection() as HttpURLConnection
-            conn.connectTimeout = 4000
-            conn.readTimeout = 4000
-            conn.requestMethod = "POST"
-            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            conn.doOutput = true
-
-            conn.outputStream.use { os ->
-                os.write(body.toByteArray(Charsets.UTF_8))
-                os.flush()
-            }
-
-            val code = conn.responseCode
-            if (code in 200..299) {
-                Result.success("Pano uğurla göndərildi!")
-            } else {
-                val err = conn.errorStream?.bufferedReader()?.readText() ?: "HTTP $code"
-                Result.failure(Exception(err))
-            }
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
+    private fun errorOf(code: Int, text: String): String = when (code) {
+        401 -> "Qarşı cihaz sorğunu təsdiqləmədi (açarlar fərqlidir — hər iki cihazı sinxron edin)."
+        503 -> "Qarşı cihaz hələ serverlə cütləşdirilməyib."
+        else -> "HTTP $code ${text.take(150)}"
     }
 
-    fun sendFile(
-        peerIp: String,
-        peerPort: Int,
-        uri: Uri,
-        filename: String,
-        fileSize: Long,
-        onProgress: (percent: Double, speedMbps: Double, sent: Long) -> Unit
-    ): Result<P2pTransferRecord> {
+    fun ping(host: String, port: Int): Result<JSONObject> = try {
+        val (c, t) = req(host, port, "GET", "/p2p/ping", timeout = 4000)
+        if (c == 200) Result.success(JSONObject(t)) else Result.failure(Exception(errorOf(c, t)))
+    } catch (e: Exception) { Result.failure(e) }
+
+    fun sendClipboard(host: String, port: Int, id: String, text: String): Result<JSONObject> = try {
+        val body = JSONObject().put("id", id).put("text", text).put("origin_device", security.deviceName)
+            .put("hash", P2pAuth.sha256Hex(text.toByteArray(Charsets.UTF_8))).toString().toByteArray(Charsets.UTF_8)
+        val (c, t) = req(host, port, "POST", "/p2p/clipboard", body, timeout = 6000)
+        if (c == 200) Result.success(JSONObject(t)) else Result.failure(Exception(errorOf(c, t)))
+    } catch (e: Exception) { Result.failure(e) }
+
+    private fun hashUri(uri: Uri): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        val buf = ByteArray(CHUNK)
+        context.contentResolver.openInputStream(uri)?.use { s ->
+            while (true) {
+                if (cancelFlag.get()) throw InterruptedException("Ləğv edildi")
+                val n = s.read(buf); if (n <= 0) break; md.update(buf, 0, n)
+            }
+        } ?: throw IllegalStateException("Fayl açıla bilmədi")
+        return P2pAuth.hex(md.digest())
+    }
+
+    private fun readFully(s: InputStream, buf: ByteArray): Int {
+        var off = 0
+        while (off < buf.size) { val n = s.read(buf, off, buf.size - off); if (n <= 0) break; off += n }
+        return off
+    }
+
+    fun sendFile(host: String, port: Int, peerName: String, uri: Uri, filename: String, fileSize: Long,
+                 onProgress: (percent: Double, speedMbps: Double, sent: Long) -> Unit): Result<P2pTransferRecord> {
         cancelFlag.set(false)
-        val cleanIp = peerIp.trim()
-        val baseUrl = "http://$cleanIp:$peerPort"
-        val startTime = System.currentTimeMillis()
-
+        var transferId = ""
+        val start = System.currentTimeMillis()
         try {
-            // 1. Prepare handshake
-            val prepUrl = URL("$baseUrl/p2p/file/prepare")
-            val prepConn = prepUrl.openConnection() as HttpURLConnection
-            prepConn.connectTimeout = 10000
-            prepConn.readTimeout = 10000
-            prepConn.requestMethod = "POST"
-            prepConn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            prepConn.doOutput = true
-
-            val prepBody = JSONObject().apply {
-                put("filename", filename)
-                put("file_size", fileSize)
-                put("sha256", "")
-                put("sender_name", securityManager.deviceName)
-            }.toString()
-
-            prepConn.outputStream.use { os ->
-                os.write(prepBody.toByteArray(Charsets.UTF_8))
-                os.flush()
-            }
-
-            if (prepConn.responseCode !in 200..299) {
-                return Result.failure(Exception("Qarşı tərəf qoşulmanı qəbul etmədi: HTTP ${prepConn.responseCode}"))
-            }
-
-            val prepResStr = prepConn.inputStream.bufferedReader().readText()
-            val prepRes = JSONObject(prepResStr)
-            val transferId = prepRes.optString("transfer_id", "")
-            if (transferId.isBlank()) {
-                return Result.failure(Exception("Transfer ID alına bilmədi"))
-            }
-
-            // 2. Stream chunks
-            val inputStream: InputStream = context.contentResolver.openInputStream(uri)
-                ?: return Result.failure(Exception("Fayl açıla bilmədi"))
-
-            val chunkSize = 256 * 1024 // 256 KB chunk
-            val buffer = ByteArray(chunkSize)
-            var totalSent = 0L
-            val digest = MessageDigest.getInstance("SHA-256")
-
-            inputStream.use { stream ->
+            val sha = hashUri(uri)
+            val prep = JSONObject().put("filename", filename).put("file_size", fileSize).put("sha256", sha).put("sender_name", security.deviceName)
+            val (pc, pt) = req(host, port, "POST", "/p2p/file/prepare", prep.toString().toByteArray())
+            if (pc != 200) return fail(filename, fileSize, peerName, errorOf(pc, pt))
+            transferId = JSONObject(pt).optString("transfer_id")
+            if (transferId.isBlank()) return fail(filename, fileSize, peerName, "Transfer qəbul edilmədi")
+            var sent = 0L
+            val buf = ByteArray(CHUNK)
+            val md = MessageDigest.getInstance("SHA-256")
+            context.contentResolver.openInputStream(uri)?.use { stream ->
                 while (true) {
                     if (cancelFlag.get()) {
-                        return Result.failure(Exception("Transfer istifadəçi tərəfindən dayandırıldı"))
+                        try { req(host, port, "POST", "/p2p/file/cancel/$transferId") } catch (_: Exception) {}
+                        return fail(filename, fileSize, peerName, "Ləğv edildi", "canceled", transferId)
                     }
-
-                    val read = stream.read(buffer)
-                    if (read <= 0) break
-
-                    digest.update(buffer, 0, read)
-
-                    val chunkUrl = URL("$baseUrl/p2p/file/chunk/$transferId")
-                    val chunkConn = chunkUrl.openConnection() as HttpURLConnection
-                    chunkConn.connectTimeout = 15000
-                    chunkConn.readTimeout = 15000
-                    chunkConn.requestMethod = "POST"
-                    chunkConn.setRequestProperty("Content-Type", "application/octet-stream")
-                    chunkConn.setRequestProperty("Content-Length", read.toString())
-                    chunkConn.doOutput = true
-
-                    chunkConn.outputStream.use { os ->
-                        os.write(buffer, 0, read)
-                        os.flush()
+                    val n = readFully(stream, buf)
+                    if (n <= 0) break
+                    val chunk = buf.copyOf(n)
+                    md.update(chunk)
+                    var attempt = 0
+                    while (true) {
+                        attempt++
+                        val ok = try {
+                            val (cc, ct) = req(host, port, "POST", "/p2p/file/chunk/$transferId?offset=$sent", chunk, "application/octet-stream", 60000)
+                            if (cc == 401 || cc == 404) return fail(filename, fileSize, peerName, errorOf(cc, ct), id = transferId)
+                            cc == 200
+                        } catch (e: Exception) { false }
+                        if (ok) break
+                        if (attempt >= 3) return fail(filename, fileSize, peerName, "Hissə göndərilmədi", id = transferId)
+                        Thread.sleep(500L * attempt)
                     }
-
-                    if (chunkConn.responseCode !in 200..299) {
-                        return Result.failure(Exception("Çank göndərilməsi uğursuz oldu: HTTP ${chunkConn.responseCode}"))
-                    }
-
-                    totalSent += read
-                    val elapsedSec = (System.currentTimeMillis() - startTime) / 1000.0
-                    val speedMbps = if (elapsedSec > 0.05) (totalSent / (1024.0 * 1024.0)) / elapsedSec else 0.0
-                    val percent = if (fileSize > 0) Math.min(100.0, (totalSent.toDouble() / fileSize) * 100.0) else 100.0
-
-                    onProgress(percent, speedMbps, totalSent)
+                    sent += n
+                    val el = (System.currentTimeMillis() - start) / 1000.0
+                    onProgress(if (fileSize > 0) minOf(100.0, sent * 100.0 / fileSize) else 100.0, if (el > 0.05) sent / 1048576.0 / el else 0.0, sent)
                 }
-            }
-
-            // 3. Finish handshake
-            val shaHex = bytesToHex(digest.digest())
-            val finishUrl = URL("$baseUrl/p2p/file/finish/$transferId")
-            val finishConn = finishUrl.openConnection() as HttpURLConnection
-            finishConn.connectTimeout = 10000
-            finishConn.readTimeout = 10000
-            finishConn.requestMethod = "POST"
-
-            if (finishConn.responseCode !in 200..299) {
-                return Result.failure(Exception("Fayl təsdiqi uğursuz oldu: HTTP ${finishConn.responseCode}"))
-            }
-
-            val elapsedSec = (System.currentTimeMillis() - startTime) / 1000.0
-            val speedMbps = if (elapsedSec > 0.0) (totalSent / (1024.0 * 1024.0)) / elapsedSec else 0.0
-
-            val record = P2pTransferRecord(
-                id = transferId,
-                filename = filename,
-                fileSize = totalSent,
-                direction = "send",
-                peerDevice = cleanIp,
-                status = "completed",
-                speedMbps = speedMbps,
-                sha256 = shaHex,
-                timestamp = System.currentTimeMillis()
-            )
-            storage.addTransfer(record)
-
-            return Result.success(record)
+            } ?: return fail(filename, fileSize, peerName, "Fayl açıla bilmədi")
+            if (P2pAuth.hex(md.digest()) != sha) return fail(filename, fileSize, peerName, "Fayl göndərilərkən dəyişdi", id = transferId)
+            val (fc, ft) = req(host, port, "POST", "/p2p/file/finish/$transferId", JSONObject().put("sha256", sha).toString().toByteArray(), timeout = 60000)
+            if (fc != 200) return fail(filename, fileSize, peerName, errorOf(fc, ft), id = transferId)
+            if (JSONObject(ft).optString("sha256") != sha) return fail(filename, fileSize, peerName, "Qəbul edənin SHA-256 dəyəri uyğun gəlmir", id = transferId)
+            val el = (System.currentTimeMillis() - start) / 1000.0
+            val rec = P2pTransferRecord(transferId, filename, sent, "send", peerName, "completed", if (el > 0) sent / 1048576.0 / el else 0.0, sha, System.currentTimeMillis())
+            storage.addTransfer(rec)
+            return Result.success(rec)
+        } catch (e: InterruptedException) {
+            return fail(filename, fileSize, peerName, "Ləğv edildi", "canceled", transferId)
         } catch (e: Exception) {
-            Log.e(TAG, "File send error", e)
-            val record = P2pTransferRecord(
-                id = "fail_${System.currentTimeMillis()}",
-                filename = filename,
-                fileSize = fileSize,
-                direction = "send",
-                peerDevice = cleanIp,
-                status = "failed",
-                speedMbps = 0.0,
-                sha256 = "",
-                timestamp = System.currentTimeMillis()
-            )
-            storage.addTransfer(record)
-            return Result.failure(e)
+            return fail(filename, fileSize, peerName, e.message ?: "Ötürmə xətası", id = transferId)
         }
     }
 
-    private fun hashText(text: String): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        val bytes = digest.digest(text.toByteArray(Charsets.UTF_8))
-        return bytesToHex(bytes)
-    }
-
-    private fun bytesToHex(bytes: ByteArray): String {
-        val sb = StringBuilder()
-        for (b in bytes) {
-            sb.append(String.format("%02x", b))
-        }
-        return sb.toString()
+    private fun fail(name: String, size: Long, peer: String, msg: String, status: String = "failed", id: String = ""): Result<P2pTransferRecord> {
+        storage.addTransfer(P2pTransferRecord(id.ifBlank { "fail_${System.currentTimeMillis()}" }, name, size, "send", peer, status, 0.0, "", System.currentTimeMillis()))
+        return Result.failure(Exception(msg))
     }
 }

@@ -71,6 +71,7 @@ export const ConnectView: React.FC<ConnectProps> = ({
         <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
           {devices.map((dev) => {
             const isAndroid =
+              dev.platform === "android" ||
               dev.device_name.toLowerCase().includes("galaxy") ||
               dev.device_name.toLowerCase().includes("android") ||
               dev.device_name.toLowerCase().includes("s25");
@@ -126,6 +127,7 @@ export const ConnectView: React.FC<ConnectProps> = ({
                     <div style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginTop: "3px" }}>
                       ID: {dev.device_id} • Son aktivlik:{" "}
                       {new Date(dev.last_seen_at).toLocaleString("az-AZ")}
+                      {dev.p2p_hosts?.length ? ` • P2P: ${dev.p2p_hosts.join(", ")}:${dev.p2p_port}` : " • P2P ünvanı hələ bildirilməyib"}
                     </div>
                   </div>
                 </div>
@@ -133,7 +135,7 @@ export const ConnectView: React.FC<ConnectProps> = ({
                 <div style={{ display: "flex", gap: "8px" }}>
                   <button
                     className="btn-secondary"
-                    onClick={() => handleSendFileTo((dev as any).tailscale_ip || (dev as any).ip_address || "")}
+                    onClick={() => handleSendFileTo(dev.p2p_hosts?.[0] || "")}
                     title="Bu cihaza fayl göndər"
                   >
                     <Send size={15} />
@@ -141,7 +143,7 @@ export const ConnectView: React.FC<ConnectProps> = ({
                   </button>
                   <button
                     className="btn-secondary"
-                    onClick={() => handleSendClipboardTo((dev as any).tailscale_ip || (dev as any).ip_address || "")}
+                    onClick={() => handleSendClipboardTo(dev.p2p_hosts?.[0] || "")}
                     title="Mətni bu cihaza göndər"
                   >
                     <Clipboard size={15} />
@@ -166,8 +168,9 @@ export const ConnectView: React.FC<ConnectProps> = ({
       >
         <ShieldCheck size={24} color="#38bdf8" />
         <div style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>
-          Bütün cihazlararası əlaqə <b>Tailscale WireGuard</b> şifrələməsi ilə qorunur. Fayllar və
-          pano birbaşa P2P vasitəsilə ötürülür və üçüncü tərəfə ötürülmür.
+          Cihazlararası hər sorğu serverin yalnız cütləşdirilmiş cihazlara verdiyi açarla <b>imzalanır (HMAC-SHA256)</b>;
+          fayllar hər iki tərəfdə <b>SHA-256</b> ilə yoxlanılır. Tailscale ünvanları üzərindən trafik həm də WireGuard ilə
+          şifrələnir; ev Wi-Fi (LAN) ünvanlarında məzmun şifrələnmir, ona görə Tailscale tövsiyə olunur.
         </div>
       </div>
     </div>
