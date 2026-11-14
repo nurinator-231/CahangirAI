@@ -1,104 +1,55 @@
 package com.cahangir.assistant.sync
 
-import android.util.Log
+import org.json.JSONArray
 import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.io.OutputStreamWriter
-import java.net.HttpURLConnection
-import java.net.URL
 
+/** Pairing and device-management calls to the Debian server. */
 object SyncApiClient {
 
-    private const val CONNECT_TIMEOUT_MS = 6000
-    private const val READ_TIMEOUT_MS = 12000
-
-    fun registerDevice(
-        serverUrl: String,
-        adminToken: String,
-        deviceId: String,
-        deviceName: String
-    ): Pair<Boolean, String> {
-        val endpoint = "${serverUrl.trimEnd('/')}/api/auth/register-device"
-        val payload = JSONObject().apply {
-            put("admin_token", adminToken)
-            put("device_id", deviceId)
-            put("device_name", deviceName)
-        }.toString()
-
-        return try {
-            val url = URL(endpoint)
-            val conn = (url.openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                connectTimeout = CONNECT_TIMEOUT_MS
-                readTimeout = READ_TIMEOUT_MS
-                doOutput = true
-                setRequestProperty("Content-Type", "application/json")
-            }
-
-            OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(payload) }
-
-            val code = conn.responseCode
-            if (code == 200) {
-                val resp = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-                val json = JSONObject(resp)
-                val token = json.getString("api_token")
-                Pair(true, token)
-            } else {
-                val err = conn.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: "HTTP $code"
-                Pair(false, err)
-            }
-        } catch (e: Exception) {
-            Log.e("SyncApiClient", "Failed to register device", e)
-            Pair(false, e.message ?: "Network connection error")
+    /** Registers this device. The admin token is sent once in a header and never stored. */
+    fun registerDevice(serverUrl: String, adminToken: String, deviceId: String, deviceName: String): Result<String> = try {
+        val body = JSONObject().put("device_id", deviceId).put("device_name", deviceName).put("platform", "android").toString()
+        val (code, text) = SyncEngine.http("POST", "${serverUrl.trimEnd('/')}/api/auth/register-device", null, body, 10000, mapOf("X-Admin-Token" to adminToken.trim()))
+        when (code) {
+            200 -> Result.success(JSONObject(text).getString("api_token"))
+            403 -> Result.failure(Exception("Admin token yanlışdır."))
+            429 -> Result.failure(Exception("Çox uğursuz cəhd — 10 dəqiqə sonra yenidən yoxlayın."))
+            else -> Result.failure(Exception("HTTP $code: ${text.take(200)}"))
         }
+    } catch (e: Exception) {
+        Result.failure(e)
     }
 
-    fun executeSync(
-        serverUrl: String,
-        deviceToken: String,
-        payloadJson: String
-    ): Pair<Boolean, String> {
-        val endpoint = "${serverUrl.trimEnd('/')}/api/sync"
-        return try {
-            val url = URL(endpoint)
-            val conn = (url.openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                connectTimeout = CONNECT_TIMEOUT_MS
-                readTimeout = READ_TIMEOUT_MS
-                doOutput = true
-                setRequestProperty("Content-Type", "application/json")
-                setRequestProperty("Authorization", "Bearer $deviceToken")
-            }
-
-            OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(payloadJson) }
-
-            val code = conn.responseCode
-            if (code == 200) {
-                val resp = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-                Pair(true, resp)
-            } else {
-                val err = conn.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: "HTTP $code"
-                Pair(false, err)
-            }
-        } catch (e: Exception) {
-            Log.w("SyncApiClient", "Sync request failed: ${e.message}")
-            Pair(false, e.message ?: "Sync connection failed")
-        }
+    fun health(serverUrl: String): Result<JSONObject> = try {
+        val (code, text) = SyncEngine.http("GET", "${serverUrl.trimEnd('/')}/api/health", null, null, 5000)
+        if (code == 200) Result.success(JSONObject(text)) else Result.failure(Exception("HTTP $code"))
+    } catch (e: Exception) {
+        Result.failure(e)
     }
 
-    fun checkHealth(serverUrl: String): Boolean {
-        val endpoint = "${serverUrl.trimEnd('/')}/api/health"
-        return try {
-            val url = URL(endpoint)
-            val conn = (url.openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                connectTimeout = 3000
-                readTimeout = 3000
-            }
-            conn.responseCode == 200
-        } catch (_: Exception) {
-            false
-        }
+    fun listPairedDevices(serverUrl: String, deviceToken: String): Result<JSONArray> = try {
+        val (code, text) = SyncEngine.http("GET", "${serverUrl.trimEnd('/')}/api/devices", deviceToken, null, 8000)
+        if (code == 200) Result.success(JSONArray(text)) else Result.failure(Exception(SyncEngine.httpError(code, text)))
+    } catch (e: Exception) {
+        Result.failure(e)
     }
+
+    fun revokeDevice(serverUrl: String, adminToken: String, deviceId: String): Result<Unit> = try {
+        val body = JSONObject().put("device_id", deviceId).toString()
+        val (code, text) = SyncEngine.http("POST", "${serverUrl.trimEnd('/')}/api/auth/revoke-device", null, body, 8000, mapOf("X-Admin-Token" to adminToken.trim()))
+        when (code) {
+            200 -> Result.success(Unit)
+            403 -> Result.failure(Exception("Admin token yanlışdır."))
+            else -> Result.failure(Exception("HTTP $code: ${text.take(200)}"))
+        }
+    } catch (e: Exception) {
+        Result.failure(e)
+    }
+
+    /** Authenticated POST to the AI router; returns (http status, body). */
+    fun aiPost(serverUrl: String, deviceToken: String, path: String, body: JSONObject): Pair<Int, String> =
+        SyncEngine.http("POST", "${serverUrl.trimEnd('/')}$path", deviceToken, body.toString(), 60000)
+
+    fun aiGet(serverUrl: String, deviceToken: String, path: String): Pair<Int, String> =
+        SyncEngine.http("GET", "${serverUrl.trimEnd('/')}$path", deviceToken, null, 10000)
 }

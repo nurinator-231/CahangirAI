@@ -3,98 +3,47 @@ package com.cahangir.assistant.data.local.repository
 import android.content.Context
 import com.cahangir.assistant.alarm.ReminderScheduler
 import com.cahangir.assistant.data.local.CahangirDbHelper
-import com.cahangir.assistant.data.local.dao.*
+import com.cahangir.assistant.data.local.EntityStore
+import com.cahangir.assistant.sync.SyncManager
+import org.json.JSONObject
+import java.util.concurrent.CopyOnWriteArrayList
 
-class CahangirRepository(private val context: Context) {
+/** App-wide access to the native store plus change notification. */
+class CahangirRepository private constructor(private val context: Context) {
 
-    private val dbHelper = CahangirDbHelper.getInstance(context)
-    val reminderDao = ReminderDao(dbHelper)
-    val memoryDao = MemoryDao(dbHelper)
-    val projectDao = ProjectDao(dbHelper)
+    val store = EntityStore(CahangirDbHelper.getInstance(context))
 
-    private val listeners = mutableListOf<() -> Unit>()
+    companion object {
+        @Volatile
+        private var instance: CahangirRepository? = null
+        private val listeners = CopyOnWriteArrayList<() -> Unit>()
 
-    fun addListener(listener: () -> Unit) {
-        listeners.add(listener)
+        fun get(context: Context): CahangirRepository =
+            instance ?: synchronized(this) { instance ?: CahangirRepository(context.applicationContext).also { instance = it } }
     }
 
-    fun removeListener(listener: () -> Unit) {
-        listeners.remove(listener)
+    fun addListener(l: () -> Unit) { listeners.add(l) }
+    fun removeListener(l: () -> Unit) { listeners.remove(l) }
+
+    /** Called after any data change (local edit or sync): refresh UI, re-arm alarms. */
+    fun notifyDataChanged(entities: Collection<String> = emptyList()) {
+        for (l in listeners) try { l.invoke() } catch (_: Exception) {}
+        if (entities.isEmpty() || "reminders" in entities) ReminderScheduler.scheduleNextAlarm(context)
     }
 
-    /** Sinxronizasiyadan sonra UI-ni yenilə və həyəcan siqnallarını yenidən planlaşdır. */
-    fun onSyncApplied() = notifyDataChanged()
-
-    /** Bir neçə DAO əməliyyatını vahid tranzaksiyada icra et. */
-    fun <T> inTransaction(block: () -> T): T {
-        val db = dbHelper.writableDatabase
-        db.beginTransaction()
-        try {
-            val result = block()
-            db.setTransactionSuccessful()
-            return result
-        } finally {
-            db.endTransaction()
-        }
+    /** Local edit from the UI: saved immediately, synced in the background when possible. */
+    fun save(entity: String, patch: JSONObject): JSONObject {
+        val v = store.saveLocal(entity, patch)
+        if (entity == "reminders" && (patch.has("due") || patch.has("snooze"))) store.setReminderFired(v.getString("id"), null)
+        notifyDataChanged(listOf(entity))
+        SyncManager.enqueueImmediateSync(context)
+        return v
     }
 
-    private fun notifyDataChanged() {
-        for (l in listeners) {
-            try { l.invoke() } catch (_: Exception) {}
-        }
-        // Reschedule alarms whenever reminders change
-        ReminderScheduler.scheduleNextAlarm(context)
+    fun delete(entity: String, id: String): Boolean {
+        val r = store.deleteLocal(entity, id)
+        notifyDataChanged(listOf(entity))
+        SyncManager.enqueueImmediateSync(context)
+        return r
     }
-
-    // --- Reminders ---
-    fun saveReminder(reminder: LocalReminder, isPendingSync: Boolean = true) {
-        reminderDao.upsert(reminder, isPendingSync)
-        notifyDataChanged()
-    }
-
-    fun completeReminder(id: String) {
-        reminderDao.markDone(id, true)
-        notifyDataChanged()
-    }
-
-    fun snoozeReminder(id: String, durationMs: Long = 10 * 60 * 1000L) {
-        val snoozeUntil = System.currentTimeMillis() + durationMs
-        reminderDao.snooze(id, snoozeUntil)
-        notifyDataChanged()
-    }
-
-    fun deleteReminder(id: String) {
-        reminderDao.softDelete(id)
-        notifyDataChanged()
-    }
-
-    fun getActiveReminders(): List<LocalReminder> = reminderDao.getAllActive()
-
-    // --- Memories ---
-    fun saveMemory(memory: LocalMemory, isPendingSync: Boolean = true) {
-        memoryDao.upsert(memory, isPendingSync)
-        notifyDataChanged()
-    }
-
-    fun deleteMemory(id: String) {
-        memoryDao.softDelete(id)
-        notifyDataChanged()
-    }
-
-    fun getAllMemories(): List<LocalMemory> = memoryDao.getAll()
-
-    fun searchMemories(query: String): List<LocalMemory> = memoryDao.search(query)
-
-    // --- Projects ---
-    fun saveProject(project: LocalProject, isPendingSync: Boolean = true) {
-        projectDao.upsert(project, isPendingSync)
-        notifyDataChanged()
-    }
-
-    fun deleteProject(id: String) {
-        projectDao.softDelete(id)
-        notifyDataChanged()
-    }
-
-    fun getAllProjects(): List<LocalProject> = projectDao.getAll()
 }

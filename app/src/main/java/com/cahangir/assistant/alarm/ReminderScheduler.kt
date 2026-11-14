@@ -6,141 +6,90 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.util.Log
+import com.cahangir.assistant.data.local.repository.CahangirRepository
+import org.json.JSONObject
 
+/**
+ * Arms one exact AlarmManager alarm for the earliest pending reminder. When it fires,
+ * ReminderReceiver handles every due reminder and re-arms the next one. Rescheduled on
+ * every data change, app start, boot, app update, time change and time-zone change.
+ */
 object ReminderScheduler {
-
-    private const val PREFS_NAME = "cahangir_prefs"
-    private const val KEY_REMINDERS_DATA = "reminders_data"
     private const val ALARM_REQUEST_CODE = 1001
+    private const val TAG = "CahangirScheduler"
 
-    fun getSyncData(context: Context): ReminderSyncData {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val json = prefs.getString(KEY_REMINDERS_DATA, null) ?: return ReminderSyncData("", emptyList())
-        return try {
-            ReminderSyncData.fromJsonString(json)
-        } catch (e: Exception) {
-            Log.e("CahangirScheduler", "Error parsing stored reminders", e)
-            ReminderSyncData("", emptyList())
-        }
-    }
+    private fun pendingIntent(context: Context): PendingIntent = PendingIntent.getBroadcast(
+        context, ALARM_REQUEST_CODE, Intent(context, ReminderReceiver::class.java).setAction(ReminderReceiver.ACTION_FIRE),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+    )
 
-    fun saveSyncData(context: Context, data: ReminderSyncData) {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit().putString(KEY_REMINDERS_DATA, data.toJsonString()).apply()
-        scheduleNextAlarm(context)
+    fun canScheduleExact(context: Context): Boolean {
+        val am = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return false
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.S || am.canScheduleExactAlarms()
     }
 
     fun scheduleNextAlarm(context: Context) {
-        val repo = com.cahangir.assistant.data.local.repository.CahangirRepository(context)
-        val localActive = repo.getActiveReminders()
-        val data = getSyncData(context)
+        val am = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
         val now = System.currentTimeMillis()
-
-        // Combine items from local database and sync data
-        val upcomingFromRepo = localActive.filter { item ->
-            !item.done && item.effectiveTime != null && item.effectiveTime!! > now
-        }.map { item ->
-            ReminderItem(
-                id = item.id.toLongOrNull() ?: item.id.hashCode().toLong(),
-                text = item.text,
-                due = item.due,
-                snooze = item.snooze,
-                done = item.done,
-                firedAt = null,
-                timer = item.timer,
-                repeat = item.repeat
-            )
+        val rows = try {
+            CahangirRepository.get(context).store.list("reminders")
+        } catch (e: Exception) {
+            Log.e(TAG, "Cannot read reminders", e); return
         }
-
-        val allUpcoming = (upcomingFromRepo + data.reminders.filter { item ->
-            !item.done && item.effectiveTime != null && item.effectiveTime!! > now
-        }).distinctBy { it.id }.sortedBy { it.effectiveTime }
-
-        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
-
-        val intent = Intent(context, ReminderReceiver::class.java)
-        val pendingIntent = PendingIntent.getBroadcast(
-            context,
-            ALARM_REQUEST_CODE,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val nextItem = allUpcoming.firstOrNull()
-        if (nextItem != null && nextItem.effectiveTime != null) {
-            intent.putExtra("reminder_id", nextItem.id)
-            intent.putExtra("reminder_text", nextItem.text)
-            intent.putExtra("reminder_is_timer", nextItem.timer)
-            intent.putExtra("user_name", data.userName)
-
-            // Re-create pending intent with updated extras
-            val updatedPendingIntent = PendingIntent.getBroadcast(
-                context,
-                ALARM_REQUEST_CODE,
-                intent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-
-            val triggerAt = nextItem.effectiveTime!!
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    if (alarmManager.canScheduleExactAlarms()) {
-                        alarmManager.setExactAndAllowWhileIdle(
-                            AlarmManager.RTC_WAKEUP,
-                            triggerAt,
-                            updatedPendingIntent
-                        )
-                        Log.i("CahangirScheduler", "Scheduled exact alarm for: ${nextItem.text} at $triggerAt")
-                    } else {
-                        alarmManager.setAndAllowWhileIdle(
-                            AlarmManager.RTC_WAKEUP,
-                            triggerAt,
-                            updatedPendingIntent
-                        )
-                        Log.w("CahangirScheduler", "Exact alarm not permitted; using setAndAllowWhileIdle")
-                    }
-                } else {
-                    alarmManager.setExactAndAllowWhileIdle(
-                        AlarmManager.RTC_WAKEUP,
-                        triggerAt,
-                        updatedPendingIntent
-                    )
-                    Log.i("CahangirScheduler", "Scheduled exact alarm for: ${nextItem.text} at $triggerAt")
-                }
-            } catch (e: Exception) {
-                Log.e("CahangirScheduler", "Failed to schedule alarm", e)
+        val trigger = ReminderLogic.nextTrigger(rows, now)
+        val pi = pendingIntent(context)
+        if (trigger == null) {
+            am.cancel(pi)
+            return
+        }
+        try {
+            if (canScheduleExact(context)) {
+                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, trigger, pi)
+            } else {
+                // Without the exact-alarm permission Android may delay this by several minutes.
+                am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, trigger, pi)
+                Log.w(TAG, "Exact alarms not permitted; reminder may be delayed")
             }
-        } else {
-            // No upcoming alarms, cancel pending intent
-            alarmManager.cancel(pendingIntent)
-            Log.i("CahangirScheduler", "No pending alarms; cancelled alarm manager")
+        } catch (e: SecurityException) {
+            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, trigger, pi)
         }
     }
 
-    fun acknowledgeReminder(context: Context, id: Long) {
-        try {
-            val repo = com.cahangir.assistant.data.local.repository.CahangirRepository(context)
-            repo.completeReminder(id.toString())
-        } catch (_: Exception) {}
-
-        val current = getSyncData(context)
-        val updated = current.reminders.map {
-            if (it.id == id) it.copy(done = true) else it
+    /** Marks due reminders as fired / advances recurring ones; returns those to show. */
+    fun processDue(context: Context, now: Long = System.currentTimeMillis()): List<Pair<JSONObject, ReminderLogic.Action>> {
+        val repo = CahangirRepository.get(context)
+        val out = mutableListOf<Pair<JSONObject, ReminderLogic.Action>>()
+        for (r in repo.store.list("reminders")) {
+            if (!ReminderLogic.isDue(r, now)) continue
+            val a = ReminderLogic.decide(r, now)
+            if (a.nextDue != null) {
+                repo.store.saveLocal("reminders", JSONObject().put("id", a.id).put("due", a.nextDue).put("snooze", JSONObject.NULL))
+                repo.store.setReminderFired(a.id, null)
+            } else {
+                repo.store.setReminderFired(a.id, now)
+            }
+            if (a.notify) out.add(r to a)
         }
-        saveSyncData(context, current.copy(reminders = updated))
+        repo.notifyDataChanged(listOf("reminders"))
+        return out
     }
 
-    fun snoozeReminder(context: Context, id: Long, durationMs: Long = 10 * 60 * 1000) {
-        try {
-            val repo = com.cahangir.assistant.data.local.repository.CahangirRepository(context)
-            repo.snoozeReminder(id.toString(), durationMs)
-        } catch (_: Exception) {}
+    fun complete(context: Context, id: String) {
+        val repo = CahangirRepository.get(context)
+        val r = repo.store.get("reminders", id) ?: return
+        val recurring = ReminderLogic.parseRepeat(if (r.isNull("repeat")) null else r.opt("repeat")) != null
+        val patch = JSONObject().put("id", id).put("snooze", JSONObject.NULL)
+        if (!recurring) patch.put("done", 1)
+        repo.store.saveLocal("reminders", patch)
+        repo.notifyDataChanged(listOf("reminders"))
+        com.cahangir.assistant.sync.SyncManager.enqueueImmediateSync(context)
+    }
 
-        val current = getSyncData(context)
-        val snoozeTime = System.currentTimeMillis() + durationMs
-        val updated = current.reminders.map {
-            if (it.id == id) it.copy(snooze = snoozeTime, firedAt = null) else it
-        }
-        saveSyncData(context, current.copy(reminders = updated))
+    fun snooze(context: Context, id: String, durationMs: Long = 10 * 60 * 1000L) {
+        val repo = CahangirRepository.get(context)
+        repo.store.saveLocal("reminders", JSONObject().put("id", id).put("snooze", System.currentTimeMillis() + durationMs))
+        repo.store.setReminderFired(id, null)
+        repo.notifyDataChanged(listOf("reminders"))
+        com.cahangir.assistant.sync.SyncManager.enqueueImmediateSync(context)
     }
 }

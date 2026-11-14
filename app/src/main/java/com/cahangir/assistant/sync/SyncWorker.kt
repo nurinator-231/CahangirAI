@@ -8,26 +8,18 @@ import com.cahangir.assistant.security.SecurityManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-class SyncWorker(
-    appContext: Context,
-    workerParams: WorkerParameters
-) : CoroutineWorker(appContext, workerParams) {
-
+class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
-        val securityManager = SecurityManager(applicationContext)
-        if (!securityManager.isConfigured) {
-            Log.d("SyncWorker", "Debian server not configured; skipping sync.")
-            return@withContext Result.success()
-        }
-
-        val syncManager = SyncManager(applicationContext)
-        val success = syncManager.performSync()
-
-        if (success) {
-            Log.i("SyncWorker", "Background sync completed successfully.")
+        if (!SecurityManager(applicationContext).isConfigured) return@withContext Result.success()
+        try {
+            SyncManager(applicationContext).performSync()
             Result.success()
-        } else {
-            Log.w("SyncWorker", "Background sync failed. Will retry according to backoff policy.")
+        } catch (e: SyncEngine.SyncException) {
+            Log.w("SyncWorker", "Sync failed: ${e.message}")
+            // Revoked/unknown device: retrying cannot help.
+            if (e.httpCode == 401 || e.httpCode == 403) Result.failure() else Result.retry()
+        } catch (e: Exception) {
+            Log.e("SyncWorker", "Unexpected sync error", e)
             Result.retry()
         }
     }

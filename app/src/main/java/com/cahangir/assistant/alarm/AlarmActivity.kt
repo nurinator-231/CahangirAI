@@ -45,7 +45,7 @@ class AlarmActivity : ComponentActivity() {
         }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        val reminderId = intent.getLongExtra("reminder_id", 0L)
+        val reminderId = intent.getStringExtra(ReminderReceiver.EXTRA_ID) ?: ""
         val reminderText = intent.getStringExtra("reminder_text") ?: "Xatırlatma vaxtıdır"
         val isTimer = intent.getBooleanExtra("reminder_is_timer", false)
         val userName = intent.getStringExtra("user_name") ?: ""
@@ -133,7 +133,8 @@ class AlarmActivity : ComponentActivity() {
             setOnClickListener {
                 stopVibration()
                 ttsEngine?.stop()
-                ReminderScheduler.acknowledgeReminder(this@AlarmActivity, reminderId)
+                if (reminderId.isNotEmpty()) ReminderScheduler.complete(this@AlarmActivity, reminderId)
+                (getSystemService(NOTIFICATION_SERVICE) as? android.app.NotificationManager)?.cancel(ReminderReceiver.notificationId(reminderId))
                 finish()
             }
         }
@@ -159,7 +160,8 @@ class AlarmActivity : ComponentActivity() {
             setOnClickListener {
                 stopVibration()
                 ttsEngine?.stop()
-                ReminderScheduler.snoozeReminder(this@AlarmActivity, reminderId, 10 * 60 * 1000L)
+                if (reminderId.isNotEmpty()) ReminderScheduler.snooze(this@AlarmActivity, reminderId, 10 * 60 * 1000L)
+                (getSystemService(NOTIFICATION_SERVICE) as? android.app.NotificationManager)?.cancel(ReminderReceiver.notificationId(reminderId))
                 finish()
             }
         }

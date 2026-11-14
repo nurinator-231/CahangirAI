@@ -49,7 +49,7 @@
   function hm(str) { var p = String(str).split(':'); return [parseInt(p[0], 10) || 0, parseInt(p[1], 10) || 0]; }
   function ceilTo(ms, minutes) { var g = minutes * MIN; return Math.ceil(ms / g) * g; }
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
-  function cap(s) { s = String(s || '').trim(); return s ? s.charAt(0).toLocaleUpperCase() + s.slice(1) : s; }
+  function cap(s, lang) { s = String(s || '').trim(); return s ? (lang === 'az' ? s.charAt(0).toLocaleUpperCase('az') : s.charAt(0).toUpperCase()) + s.slice(1) : s; }
   function uniq(arr) { var seen = {}; return arr.filter(function (x) { if (seen[x]) return false; seen[x] = 1; return true; }); }
   function fmtClock(ms) { var d = new Date(ms); return pad(d.getHours()) + ':' + pad(d.getMinutes()); }
   var WD_EN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -314,7 +314,7 @@
     return null;
   }
 
-  function cleanTitle(clause, spans) {
+  function cleanTitle(clause, spans, lang) {
     var t = ' ' + clause + ' ';
     spans.filter(Boolean).sort(function (a, b) { return b.length - a.length; }).forEach(function (s) {
       var idx = lower(t).indexOf(lower(s));
@@ -331,12 +331,13 @@
     var art = low.match(ARTICLES);
     if (art) { t = t.slice(art[0].length); }
     for (var i = 0; i < 3; i++) {
+      t = t.replace(/[\s,;:.!-]+$/, '');
       var tf = lower(t).match(TRAILING_FILLER);
       if (tf) t = t.slice(0, t.length - tf[0].length);
       t = t.replace(/\s+(due|by|before|until|on|at|for|and|also|too|which|that|which takes|it takes)$/i, '');
     }
     t = t.replace(/^[\s,:;-]+|[\s,:;-]+$/g, '').replace(/\s*-\s*(?:da|də|ta|tə)\b/g, '');
-    return cap(t);
+    return cap(t, lang);
   }
 
   function isDurationOnly(clause, dur) {
@@ -379,7 +380,7 @@
       if (recurrence) spans.push((low.match(/\bevery ?day\b|\bdaily\b|\bevery week\b|\bweekly\b|hər gün|hər həftə|\bevery\b/) || [])[0]);
       var prioWords = low.match(/\b(urgent|urgently|asap|as soon as possible|important|high priority|low priority|not urgent)\b|təcili|vacib deyil|vacib|mühüm/);
       if (prioWords) spans.push(prioWords[0]);
-      var title = cleanTitle(clause, spans);
+      var title = cleanTitle(clause, spans, lang);
       if (!title || title.length < 2) return;
 
       if (time && !hasDeadlineMarker && (looksEvent || date)) {
