@@ -71,7 +71,7 @@ export const AiChatView: React.FC<AiChatProps> = ({ lang, onActionTriggered }) =
     try {
       await api.saveChatMessage(userMsg);
 
-      const aiRes = await AIProvider.processMessage(userMsg.content);
+      const aiRes = await AIProvider.processMessage(userMsg.content, messages);
 
       const assistantMsg: ChatMessage = {
         id: `ast_${Date.now()}`,

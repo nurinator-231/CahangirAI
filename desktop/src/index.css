@@ -526,3 +526,29 @@ pre {
     transform: translateY(0);
   }
 }
+
+/* ---- Planner & shared utilities ---- */
+.tabs { display: flex; gap: 6px; flex-wrap: wrap; border-bottom: 1px solid var(--border-color); padding-bottom: 8px; }
+.tab { background: transparent; border: 1px solid var(--border-color); color: var(--text-secondary); padding: 6px 12px; border-radius: 8px; cursor: pointer; font-size: 0.85rem; }
+.tab.on { background: var(--accent-gradient); color: #fff; border-color: transparent; }
+.muted { color: var(--text-muted); font-size: 0.82rem; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.col { display: flex; flex-direction: column; gap: 8px; }
+.item { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-card); }
+.item .grow { flex: 1; min-width: 0; }
+.item .title { font-weight: 600; word-break: break-word; }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 0.72rem; border: 1px solid var(--border-color); color: var(--text-secondary); margin-right: 4px; }
+.pill.urgent { border-color: var(--danger); color: var(--danger); }
+.pill.high { border-color: var(--warning); color: var(--warning); }
+.pill.ok { border-color: var(--success); color: var(--success); }
+.pill.event { border-color: var(--accent-blue); color: var(--accent-blue); }
+.conflict { border-left: 3px solid var(--warning); padding: 8px 10px; background: rgba(245, 158, 11, 0.08); border-radius: 8px; }
+.danger-box { border-left: 3px solid var(--danger); padding: 8px 10px; background: rgba(239, 68, 68, 0.08); border-radius: 8px; }
+.week-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; }
+.week-day { border: 1px solid var(--border-color); border-radius: 10px; padding: 8px; min-height: 140px; background: var(--bg-card); font-size: 0.78rem; }
+.week-day.today { border-color: var(--accent-blue); }
+.btn-small { padding: 4px 10px !important; font-size: 0.78rem !important; }
+.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; }
+.form-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 0.78rem; color: var(--text-secondary); }
+textarea.nl { width: 100%; min-height: 70px; resize: vertical; }
+textarea { font-family: inherit; }

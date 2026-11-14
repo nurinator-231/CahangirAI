@@ -1,5 +1,6 @@
 export type ActiveView =
   | "dashboard"
+  | "planner"
   | "ai"
   | "connect"
   | "file-transfer"
@@ -25,6 +26,15 @@ export interface AppConfig {
   theme: "dark" | "light";
   language: "az" | "en";
   last_sync_time: number;
+  last_server_rev: number;
+  auto_sync_minutes: number;
+  clipboard_auto_share: boolean;
+  last_sync_status: string;
+  last_sync_error: string;
+  mesh_key: string;
+  mesh_key_id: number;
+  planner_day_start: string;
+  planner_day_end: string;
 }
 
 export interface MemoryItem {
@@ -49,6 +59,10 @@ export interface ReminderItem {
   done: number;
   timer: number;
   repeat: string | null;
+  task_id?: string | null;
+  event_id?: string | null;
+  kind?: string;
+  fired_at?: number | null;
   created_at: number;
   updated_at: number;
   deleted: number;
@@ -85,6 +99,75 @@ export interface DeviceItem {
   created_at: number;
   last_seen_at: number;
   is_revoked: number;
+  platform?: string;
+  app_version?: string;
+  p2p_hosts?: string[];
+  p2p_port?: number;
+  last_sync_at?: number;
+}
+
+export type Priority = "low" | "medium" | "high" | "urgent";
+
+interface Synced {
+  id: string;
+  created_at: number;
+  updated_at: number;
+  deleted: number;
+  sync_status: number;
+  server_rev?: number;
+}
+
+export interface TaskItem extends Synced {
+  title: string;
+  description: string;
+  category: string;
+  priority: Priority;
+  deadline: number | null;
+  estimated_minutes: number | null;
+  status: "todo" | "in_progress" | "done" | "cancelled";
+  project_id: string | null;
+  completed_at: number | null;
+  source: string;
+}
+
+export interface EventItem extends Synced {
+  title: string;
+  start_at: number;
+  end_at: number | null;
+  all_day: number;
+  location: string;
+  recurrence: string | null;
+  notes: string;
+  source: string;
+  confirmed: number;
+}
+
+export interface PlanBlock extends Synced {
+  task_id: string;
+  start_at: number;
+  end_at: number;
+  status: "proposed" | "confirmed" | "done" | "skipped";
+  locked: number;
+  reason: string;
+}
+
+export interface ClipboardItem extends Synced {
+  text: string;
+  hash: string;
+  origin_name: string;
+  origin_device?: string;
+}
+
+export interface SyncStatus {
+  configured: boolean;
+  server_url: string;
+  status: string;
+  error: string;
+  last_sync_time: number;
+  pending: number;
+  auto_sync_minutes: number;
+  p2p_ready: boolean;
+  device_id: string;
 }
 
 export interface SystemMetrics {

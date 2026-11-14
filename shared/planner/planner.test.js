@@ -230,6 +230,25 @@ test('done task future blocks are removed; overdue tasks flagged and scheduled A
   assert.equal(p.add[0].start_at, NOW);
 });
 
+test('move lower-priority work: released blocks are re-planned after the boosted task', () => {
+  const inp = base();
+  inp.now = at(19, 18);
+  inp.prefs = { dayEnd: '20:00' };
+  inp.tasks[0].estimated_minutes = 180; // due Fri 23:59; Thu 18-20 and Fri 18-20 are the only free windows
+  inp.events.push({ id: 'WORK', title: 'Work', start_at: at(20, 8), end_at: at(20, 17, 50) });
+  inp.tasks.push({ id: 'LOW', title: 'Read novel', priority: 'low', deadline: null, estimated_minutes: 60, status: 'todo' });
+  inp.blocks = [{ id: 'BL', task_id: 'LOW', start_at: at(20, 18), end_at: at(20, 19), status: 'confirmed', locked: 0 }];
+  const p1 = P.schedule(inp);
+  const risk = p1.conflicts.find(c => c.type === 'deadline_at_risk');
+  assert.ok(risk);
+  const mv = risk.alternatives.find(a => a.type === 'move_lower_priority');
+  assert.ok(mv && mv.block_ids.includes('BL'));
+  const p2 = P.schedule(Object.assign({}, inp, { release: mv.block_ids, boost: ['T1'] }));
+  assert.ok(p2.remove.includes('BL'));
+  assert.ok(!p2.conflicts.some(c => c.type === 'deadline_at_risk' && c.task_id === 'T1'));
+  assert.equal(p2.add.filter(b => b.task_id === 'T1').reduce((s, b) => s + (b.end_at - b.start_at) / MIN, 0), 180);
+});
+
 test('overlapping commitments detected', () => {
   const inp = base();
   inp.events.push({ id: 'E2', title: 'Dentist', start_at: at(15, 10, 30), end_at: at(15, 11) });

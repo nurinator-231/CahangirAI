@@ -507,7 +507,8 @@
 
   /**
    * schedule(input) -> plan
-   * input: { tasks, events, blocks, now, prefs, lang, allowLate: [taskId], extendMinutes }
+   * input: { tasks, events, blocks, now, prefs, lang, allowLate: [taskId], extendMinutes,
+   *          release: [blockId] (unlocked blocks the user agreed to move), boost: [taskId] (schedule first) }
    * plan: {
    *   add:    new blocks to create (status 'confirmed' once the user accepts),
    *   remove: ids of existing unlocked blocks to delete (moved / obsolete),
@@ -528,6 +529,9 @@
     var tasks = (input.tasks || []).filter(isOpenTask);
     var taskById = {}; (input.tasks || []).forEach(function (t) { taskById[t.id] = t; });
     var allowLate = {}; (input.allowLate || []).forEach(function (id) { allowLate[id] = true; });
+    var release = {}; (input.release || []).forEach(function (id) { release[id] = true; });
+    var boost = {}; (input.boost || []).forEach(function (id) { boost[id] = true; });
+    tasks = tasks.map(function (t) { return boost[t.id] ? Object.assign({}, t, { priority: 'urgent', _boosted: true }) : t; });
     if (input.extendMinutes) {
       var de = hm(prefs.dayEnd), total = Math.min(23 * 60 + 59, de[0] * 60 + de[1] + input.extendMinutes);
       prefs.dayEnd = pad(Math.floor(total / 60)) + ':' + pad(total % 60);
@@ -557,6 +561,7 @@
       if (b.status === 'done') { planned[b.task_id] = (planned[b.task_id] || 0) + mins; keep.push(b); return; }
       if (b.status === 'skipped') { keep.push(b); return; }
       var future = b.end_at > nowMs;
+      if (release[b.id] && !b.locked && future) { remove.push(b.id); return; } // user chose to move it
       if (!t || !isOpenTask(t)) {
         if (future && !b.locked) remove.push(b.id); else keep.push(b);
         return;
@@ -814,6 +819,7 @@
     findDuration: findDuration, findTime: findTime, findDate: findDate, splitClauses: splitClauses, fmtWhen: fmtWhen,
     fmtMinutes: fmtMinutes, fmtClock: fmtClock, sod: sod, addDays: addDays, blockId: blockId, eventEnd: eventEnd, MIN: MIN, HOUR: HOUR, DAY: DAY
   };
+  // Always register the global (WebView / bundled builds) and export for CommonJS (tests).
+  root.CahangirPlanner = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
-  else root.CahangirPlanner = api;
 })(typeof window !== 'undefined' ? window : globalThis);
