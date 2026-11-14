@@ -113,7 +113,7 @@ pub async fn start_p2p_server(port: u16, state: P2pServerState) -> Result<(), Bo
 
 async fn handle_ping(State(st): State<P2pServerState>) -> Json<Value> {
     let cfg = st.db.get_config().unwrap_or_default();
-    Json(json!({"device_id": cfg.device_id, "device_name": cfg.device_name, "status": "online", "platform": "windows"}))
+    Json(json!({"device_id": cfg.device_id, "device_name": cfg.device_name, "status": "online", "platform": std::env::consts::OS}))
 }
 
 #[derive(Deserialize)]

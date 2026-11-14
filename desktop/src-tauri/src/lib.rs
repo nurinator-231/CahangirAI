@@ -119,7 +119,7 @@ async fn register_device_api(server_url: String, admin_token: String, device_nam
     let res = http()?
         .post(format!("{}/api/auth/register-device", url))
         .header("X-Admin-Token", admin_token.trim())
-        .json(&json!({"device_id": cfg.device_id, "device_name": name, "platform": "windows"}))
+        .json(&json!({"device_id": cfg.device_id, "device_name": name, "platform": std::env::consts::OS}))
         .send()
         .await
         .map_err(|e| format!("Sorğu uğursuz oldu: {}", e))?;
@@ -219,7 +219,7 @@ async fn run_sync(app: &AppHandle) -> Result<sync::SyncReport, String> {
     let state = app.state::<AppState>();
     let _guard = state.sync_lock.lock().await;
     let cfg = state.db.get_config().map_err(e2s)?;
-    let info = sync::P2pInfo { hosts: sync::local_ipv4s(), port: cfg.p2p_port, platform: "windows".into(), app_version: APP_VERSION.into() };
+    let info = sync::P2pInfo { hosts: sync::local_ipv4s(), port: cfg.p2p_port, platform: std::env::consts::OS.into(), app_version: APP_VERSION.into() };
     let _ = app.emit("sync://status", json!({"status": "syncing"}));
     let result = sync::sync_once(&state.db, Some(info)).await;
     match &result {

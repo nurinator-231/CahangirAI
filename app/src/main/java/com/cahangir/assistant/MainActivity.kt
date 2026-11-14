@@ -449,7 +449,9 @@ class MainActivity : ComponentActivity() {
             }
 
             override fun onPermissionRequest(request: PermissionRequest?) {
-                request?.grant(request.resources)
+                // Only the microphone (Web Speech fallback) may be granted to the local UI.
+                val allowed = request?.resources?.filter { it == PermissionRequest.RESOURCE_AUDIO_CAPTURE }?.toTypedArray()
+                if (request != null && !allowed.isNullOrEmpty()) request.grant(allowed) else request?.deny()
             }
 
             override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
