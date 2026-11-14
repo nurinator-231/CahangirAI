@@ -1,75 +1,85 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Cahangir Backend Setup Script for Debian 13 (Trixie) / Intel Atom D525
+# Cahangir Backend install / upgrade for Debian (safe to re-run; user data is kept)
 # ==============================================================================
-set -e
+set -euo pipefail
 
 INSTALL_DIR="/opt/cahangir-backend"
 SERVICE_NAME="cahangir-backend.service"
 USER_NAME="${SUDO_USER:-$USER}"
-
-echo "=========================================="
-echo "Installing Cahangir AI Central Backend..."
-echo "=========================================="
+SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 if [ "$EUID" -ne 0 ]; then
-  echo "[!] Please run as root or with sudo:"
-  echo "    sudo bash setup_debian.sh"
+  echo "[!] Please run with sudo:  sudo bash setup_debian.sh"
   exit 1
 fi
 
-echo "[1/6] Installing system prerequisites (python3, python3-venv, curl)..."
+echo "[1/7] Installing prerequisites (python3, python3-venv, curl)..."
 apt-get update -qq
 apt-get install -y -qq python3 python3-venv python3-pip curl
 
-echo "[2/6] Setting up target directory: $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR"
-cp -r app requirements.txt "$INSTALL_DIR/"
+if [ -f "$INSTALL_DIR/data/cahangir.db" ]; then
+  echo "[2/7] Existing database found - creating a safety backup before upgrading..."
+  mkdir -p "$INSTALL_DIR/backups"
+  STAMP=$(date +%Y%m%d_%H%M%S)
+  python3 - "$INSTALL_DIR/data/cahangir.db" "$INSTALL_DIR/backups/pre_upgrade_$STAMP.db" <<'PY'
+import sqlite3, sys
+src = sqlite3.connect(sys.argv[1]); dst = sqlite3.connect(sys.argv[2])
+with dst: src.backup(dst)
+print("    backup:", sys.argv[2])
+PY
+else
+  echo "[2/7] Fresh installation."
+fi
 
-echo "[3/6] Creating Python virtual environment..."
-python3 -m venv "$INSTALL_DIR/venv"
+echo "[3/7] Installing application code (data/ and backups/ are never touched)..."
+systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+rm -rf "$INSTALL_DIR/app"
+cp -r "$SRC_DIR/app" "$SRC_DIR/requirements.txt" "$INSTALL_DIR/"
+find "$INSTALL_DIR/app" -name "__pycache__" -type d -prune -exec rm -rf {} +
+
+echo "[4/7] Python virtual environment..."
+[ -d "$INSTALL_DIR/venv" ] || python3 -m venv "$INSTALL_DIR/venv"
 "$INSTALL_DIR/venv/bin/pip" install --upgrade pip -q
 "$INSTALL_DIR/venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt" -q
 
-echo "[4/6] Setting directory permissions..."
+echo "[5/7] Permissions and configuration..."
 chown -R "$USER_NAME":"$USER_NAME" "$INSTALL_DIR"
+mkdir -p /etc/cahangir
+if [ ! -f /etc/cahangir/cahangir.env ]; then
+  cp "$SRC_DIR/cahangir.env.example" /etc/cahangir/cahangir.env
+fi
+chown root:root /etc/cahangir/cahangir.env
+chmod 600 /etc/cahangir/cahangir.env
 
-echo "[5/6] Configuring systemd service..."
-sed -i "s/User=debian/User=$USER_NAME/g" cahangir-backend.service
-cp cahangir-backend.service /etc/systemd/system/"$SERVICE_NAME"
+echo "[6/7] systemd service..."
+sed "s/^User=debian/User=$USER_NAME/" "$SRC_DIR/cahangir-backend.service" > /etc/systemd/system/"$SERVICE_NAME"
 systemctl daemon-reload
 systemctl enable "$SERVICE_NAME"
 systemctl restart "$SERVICE_NAME"
 
-echo "[6/6] Verifying service status..."
-sleep 2
+echo "[7/7] Verifying..."
+for i in $(seq 1 15); do
+  if curl -fsS "http://127.0.0.1:${CAHANGIR_PORT:-8000}/api/health" >/dev/null 2>&1; then break; fi
+  sleep 1
+done
 if systemctl is-active --quiet "$SERVICE_NAME"; then
-    echo "✓ Cahangir backend service is ACTIVE and RUNNING."
+  echo "OK: service is running."
+  curl -fsS "http://127.0.0.1:${CAHANGIR_PORT:-8000}/api/health" || echo "(health endpoint not reachable on 127.0.0.1 - check CAHANGIR_HOST)"
+  echo
 else
-    echo "[!] Service failed to start. Check logs with: journalctl -u $SERVICE_NAME -e"
-    exit 1
+  echo "[!] Service failed to start. Logs: journalctl -u $SERVICE_NAME -e"
+  exit 1
 fi
 
-echo "=========================================="
-echo "✓ Installation Complete!"
-echo "=========================================="
-
-# Read pairing token
 if [ -f "$INSTALL_DIR/data/admin_token.txt" ]; then
-    TOKEN=$(cat "$INSTALL_DIR/data/admin_token.txt")
-    echo "Your Device Pairing Admin Token is:"
-    echo "------------------------------------------"
-    echo "$TOKEN"
-    echo "------------------------------------------"
-    echo "Enter this token on your Galaxy S25 / Android app to pair!"
+  chmod 600 "$INSTALL_DIR/data/admin_token.txt"
+  echo "Admin pairing token (enter it once on each device when pairing):"
+  echo "    $(cat "$INSTALL_DIR/data/admin_token.txt")"
 fi
-
-# Detect Tailscale IP if available
 if command -v tailscale &> /dev/null; then
-    TS_IP=$(tailscale ip -4 2>/dev/null || echo "")
-    if [ -n "$TS_IP" ]; then
-        echo "Tailscale IP detected: http://$TS_IP:8000"
-    fi
+  TS_IP=$(tailscale ip -4 2>/dev/null || true)
+  [ -n "$TS_IP" ] && echo "Tailscale URL: http://$TS_IP:${CAHANGIR_PORT:-8000}"
 fi
-echo "Local LAN address: http://$(hostname -I | awk '{print $1}'):8000"
-echo "API Docs: http://localhost:8000/docs"
+echo "AI providers: edit /etc/cahangir/cahangir.env then: sudo systemctl restart $SERVICE_NAME"

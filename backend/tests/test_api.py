@@ -1,112 +1,111 @@
-import os
-import sys
-import unittest
-from pathlib import Path
-
-# Add backend directory to sys.path
-BASE_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(BASE_DIR))
-
-# Use an in-memory or temp SQLite DB for testing
-os.environ["CAHANGIR_DB_PATH"] = str(BASE_DIR / "data" / "test_cahangir.db")
-os.environ["CAHANGIR_ADMIN_TOKEN"] = "test_admin_secret_123"
-
-from fastapi.testclient import TestClient
-from app.database import init_db
-from app.main import app
+"""API, authentication, CRUD and security tests."""
+from conftest import ADMIN
 
 
-class CahangirBackendTests(unittest.TestCase):
-
-    @classmethod
-    def setUpClass(cls):
-        init_db()
-        cls.client = TestClient(app)
-        cls.admin_token = "test_admin_secret_123"
-
-    def test_01_health_check(self):
-        res = self.client.get("/api/health")
-        self.assertEqual(res.status_code, 200)
-        data = res.json()
-        self.assertEqual(data["status"], "healthy")
-        self.assertIn("cpu_percent", data)
-        self.assertIn("ram_used_mb", data)
-
-    def test_02_register_device(self):
-        payload = {
-            "admin_token": self.admin_token,
-            "device_id": "galaxy_s25_test",
-            "device_name": "Samsung Galaxy S25",
-        }
-        res = self.client.post("/api/auth/register-device", json=payload)
-        self.assertEqual(res.status_code, 200)
-        data = res.json()
-        self.assertEqual(data["device_id"], "galaxy_s25_test")
-        self.assertTrue(data["api_token"].startswith("cg_"))
-        CahangirBackendTests.device_token = data["api_token"]
-
-    def test_03_create_memory(self):
-        headers = {"Authorization": f"Bearer {self.device_token}"}
-        payload = {
-            "id": "mem_test_1",
-            "category": "personal",
-            "fact_text": "Anamın ad günü 15 maydır.",
-        }
-        res = self.client.post("/api/memories", json=payload, headers=headers)
-        self.assertEqual(res.status_code, 200)
-        data = res.json()
-        self.assertEqual(data["fact_text"], "Anamın ad günü 15 maydır.")
-
-        # Test search
-        res_search = self.client.get("/api/memories?q=15+may", headers=headers)
-        self.assertEqual(res_search.status_code, 200)
-        self.assertEqual(len(res_search.json()), 1)
-
-    def test_04_create_reminder(self):
-        headers = {"Authorization": f"Bearer {self.device_token}"}
-        payload = {
-            "id": "rem_test_1",
-            "text": "Dərman qəbul et",
-            "due": 1730000000000,
-            "done": 0,
-        }
-        res = self.client.post("/api/reminders", json=payload, headers=headers)
-        self.assertEqual(res.status_code, 200)
-        data = res.json()
-        self.assertEqual(data["text"], "Dərman qəbul et")
-
-    def test_05_bidirectional_sync(self):
-        headers = {"Authorization": f"Bearer {self.device_token}"}
-        payload = {
-            "device_id": "galaxy_s25_test",
-            "client_timestamp": 0,
-            "reminders": [
-                {
-                    "id": "rem_sync_2",
-                    "user_id": "default",
-                    "text": "Toplantı hesabatı",
-                    "due": 1730500000000,
-                    "snooze": None,
-                    "done": 0,
-                    "timer": 0,
-                    "repeat": None,
-                    "created_at": 1730000000000,
-                    "updated_at": 1730000000000,
-                    "deleted": 0,
-                }
-            ],
-            "memories": [],
-            "projects": [],
-        }
-        res = self.client.post("/api/sync", json=payload, headers=headers)
-        self.assertEqual(res.status_code, 200)
-        data = res.json()
-        self.assertTrue(data["success"])
-        self.assertEqual(data["applied_reminders"], 1)
-        # Should pull rem_test_1 back in delta
-        delta_reminders = data["delta"]["reminders"]
-        self.assertTrue(any(r["id"] == "rem_test_1" for r in delta_reminders))
+def test_health_public(client):
+    r = client.get("/api/health")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["status"] == "healthy"
+    assert d["schema_version"] == 2
+    assert "server_rev" in d
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_register_and_auth_errors(client, make_device):
+    dev, h = make_device("phone")
+    assert client.get("/api/tasks", headers=h).status_code == 200
+    assert client.get("/api/tasks").status_code == 401
+    assert client.get("/api/tasks", headers={"Authorization": "Bearer nope"}).status_code == 401
+    assert client.get("/api/tasks", headers={"Authorization": "Token x"}).status_code == 401
+    r = client.post("/api/auth/register-device", json={"admin_token": "wrong", "device_id": "x", "device_name": "x"})
+    assert r.status_code == 403
+
+
+def test_register_with_admin_header(client):
+    r = client.post("/api/auth/register-device", headers={"X-Admin-Token": ADMIN}, json={"device_id": "hdr_dev", "device_name": "Header"})
+    assert r.status_code == 200
+    assert r.json()["api_token"].startswith("cg_")
+
+
+def test_bruteforce_throttle(client):
+    for _ in range(10):
+        client.get("/api/tasks", headers={"Authorization": "Bearer bad"})
+    r = client.get("/api/tasks", headers={"Authorization": "Bearer bad"})
+    assert r.status_code == 429
+
+
+def test_revoke_blocks_device_and_rotates_mesh_key(client, make_device):
+    dev, h = make_device("laptop")
+    other, h2 = make_device("phone")
+    k1 = client.get("/api/p2p/credentials", headers=h2).json()
+    r = client.post("/api/auth/revoke-device", headers={"X-Admin-Token": ADMIN}, json={"device_id": dev})
+    assert r.status_code == 200
+    assert client.get("/api/tasks", headers=h).status_code == 403
+    assert client.get("/api/p2p/credentials", headers=h).status_code == 403
+    k2 = client.get("/api/p2p/credentials", headers=h2).json()
+    assert k1["mesh_key"] != k2["mesh_key"] and k2["key_id"] == k1["key_id"] + 1
+    assert len(k2["mesh_key"]) == 64
+
+
+def test_admin_device_list_header_and_legacy_query(client, make_device):
+    make_device("x")
+    assert client.get("/api/auth/devices", headers={"X-Admin-Token": ADMIN}).status_code == 200
+    assert client.get(f"/api/auth/devices?admin_token={ADMIN}").status_code == 200
+    assert client.get("/api/auth/devices", headers={"X-Admin-Token": "bad"}).status_code == 403
+
+
+def test_devices_list_exposes_p2p_info_not_secrets(client, make_device):
+    dev, h = make_device("win")
+    client.post("/api/sync", headers=h, json={"device_id": dev, "since_rev": 0, "p2p": {"hosts": ["100.64.1.2", "192.168.1.5"], "port": 8767, "platform": "windows", "app_version": "1.0.0"}})
+    devs = client.get("/api/devices", headers=h).json()
+    me = next(d for d in devs if d["device_id"] == dev)
+    assert me["p2p_hosts"] == ["100.64.1.2", "192.168.1.5"] and me["p2p_port"] == 8767 and me["platform"] == "windows"
+    assert all("token" not in k for d in devs for k in d)
+
+
+def test_memory_crud_and_search(client, make_device):
+    _, h = make_device()
+    r = client.post("/api/memories", headers=h, json={"id": "mem_test_1", "category": "personal", "fact_text": "Anamın ad günü 15 maydır."})
+    assert r.status_code == 200 and r.json()["fact_text"] == "Anamın ad günü 15 maydır."
+    res = client.get("/api/memories?q=15+may", headers=h).json()
+    assert [m["id"] for m in res] == ["mem_test_1"]
+    assert client.delete("/api/memories/mem_test_1", headers=h).status_code == 200
+    assert client.get("/api/memories?q=15+may", headers=h).json() == []
+    assert client.get("/api/memories?q=15+may&include_deleted=true", headers=h).json()[0]["deleted"] == 1
+
+
+def test_reminder_crud_including_update(client, make_device):
+    _, h = make_device()
+    r = client.post("/api/reminders", headers=h, json={"id": "rem_u1", "text": "Dərman qəbul et", "due": 1730000000000, "repeat": {"type": "daily"}})
+    assert r.status_code == 200
+    assert r.json()["repeat"] == '{"type":"daily"}'
+    r = client.put("/api/reminders/rem_u1", headers=h, json={"text": "Dərman (axşam)", "due": 1730000600000})
+    assert r.status_code == 200 and r.json()["text"] == "Dərman (axşam)" and r.json()["due"] == 1730000600000
+    assert client.put("/api/reminders/rem_u1/snooze?minutes=5", headers=h).status_code == 200
+    assert client.put("/api/reminders/rem_u1/complete", headers=h).status_code == 200
+    item = client.get("/api/reminders/rem_u1", headers=h).json()
+    assert item["done"] == 1 and item["snooze"] is None
+    assert client.put("/api/reminders/missing", headers=h, json={"text": "x"}).status_code == 404
+
+
+def test_task_validation(client, make_device):
+    _, h = make_device()
+    assert client.post("/api/tasks", headers=h, json={"title": "x", "priority": "super"}).status_code == 422
+    assert client.post("/api/tasks", headers=h, json={"title": "x", "deadline": "tomorrow"}).status_code == 422
+    assert client.post("/api/events", headers=h, json={"title": "x", "recurrence": "{not json"}).status_code == 422
+    r = client.post("/api/tasks", headers=h, json={"title": "Programming assignment", "priority": "high", "estimated_minutes": 120, "deadline": 1731100000000})
+    assert r.status_code == 200
+    t = r.json()
+    assert t["id"].startswith("tsk_") and t["status"] == "todo" and t["server_rev"] > 0
+
+
+def test_cors_disabled_by_default(client):
+    r = client.options("/api/health", headers={"Origin": "http://evil.example", "Access-Control-Request-Method": "GET"})
+    assert "access-control-allow-origin" not in {k.lower() for k in r.headers}
+
+
+def test_backup_endpoint_requires_admin(client):
+    assert client.post("/api/backup").status_code == 403
+    r = client.post("/api/backup", headers={"X-Admin-Token": ADMIN})
+    assert r.status_code == 200 and r.json()["success"]
+    assert len(client.get("/api/backups", headers={"X-Admin-Token": ADMIN}).json()) >= 1

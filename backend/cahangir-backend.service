@@ -1,13 +1,15 @@
 [Unit]
 Description=Cahangir AI Central Memory & Synchronization Backend
-After=network.target tailscaled.service
-Wants=tailscaled.service
+After=network-online.target tailscaled.service
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=debian
 WorkingDirectory=/opt/cahangir-backend
-ExecStart=/opt/cahangir-backend/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+# Optional secrets/config (AI provider keys, bind address). Not part of the repository.
+EnvironmentFile=-/etc/cahangir/cahangir.env
+ExecStart=/opt/cahangir-backend/venv/bin/uvicorn app.main:app --host ${CAHANGIR_HOST} --port ${CAHANGIR_PORT} --workers 1 --no-server-header
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
@@ -18,6 +20,7 @@ Environment=CAHANGIR_PORT=8000
 MemoryMax=300M
 CPUQuota=100%
 ProtectSystem=full
+PrivateTmp=true
 NoNewPrivileges=true
 
 [Install]
