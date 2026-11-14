@@ -1,0 +1,2 @@
+2f95c249e83941b17b7fbdcafb498cf284d140e9a977632c3bd0fc3a1c12fdd5  Cahangir_1.0.0_android.apk
+3fee025c9c7724900ac30d398916079fba04bdcdfa49d001074fd5fb4a649708  Cahangir_1.0.0_x64-setup.exe

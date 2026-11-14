@@ -1,3 +1,5 @@
+> **Qeyd / Note:** Bu sənəd 1.0-dan əvvəlki vəziyyəti təsvir edir. Aktual arxitektura: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), quraşdırma: [docs/INSTALL.md](docs/INSTALL.md). This document describes the pre-1.0 design; see docs/ for the current one.
+
 # Cahangir AI — Tam Sistem Arxitekturası və Bələdçi
 
 Bu sənəd **Cahangir AI** şəxsi köməkçisinin mərkəzi Debian serveri və Android (Galaxy S25) tətbiqi arasındakı tam arxitektura, oflayn işləmə mexanizmi, sinxronizasiya protokolu və quraşdırma təlimatını əhatə edir.

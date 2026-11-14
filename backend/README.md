@@ -1,3 +1,5 @@
+> **1.0 / backend 4.0.0:** sync protocol v2, planner entities, free-tier AI router, automatic backups. Current docs: [../docs/INSTALL.md](../docs/INSTALL.md), [../docs/CONFIGURATION.md](../docs/CONFIGURATION.md). The endpoint table below is partially outdated — see `/docs` (OpenAPI) on the running server.
+
 # Cahangir Central Memory & Sync Server (Debian Backend)
 
 Bu modul **Cahangir AI** şəxsi köməkçisinin mərkəzi yaddaş, sinxronizasiya və cihaz təhlükəsizlik serveridir.
