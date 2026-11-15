@@ -83,7 +83,9 @@ DEFAULT_PROVIDERS: Dict[str, ProviderConfig] = {
     "gemini": ProviderConfig(
         name="gemini",
         label="Google Gemini (AI Studio free tier)",
-        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        # Native Gemini REST API (not the /openai compatibility layer): new AI Studio
+        # "Auth keys" (AQ.…) are rejected there with HTTP 400 "Invalid Auth key".
+        base_url="https://generativelanguage.googleapis.com/v1beta",
         model="gemini-2.5-flash",
         key_env="GEMINI_API_KEY",
         rpm=8,
@@ -255,7 +257,99 @@ class OpenRouterProvider(OpenAICompatibleProvider):
         return super().chat(messages, json_mode=json_mode, timeout=timeout, max_tokens=max_tokens)
 
 
-ADAPTERS = {"openrouter": OpenRouterProvider}
+class GeminiProvider(OpenAICompatibleProvider):
+    """Native Gemini API adapter (models/<model>:generateContent).
+
+    Google AI Studio now issues "Auth keys" (prefix AQ.) instead of the old AIza keys.
+    The OpenAI-compatible endpoint (/v1beta/openai + Authorization: Bearer) rejects them
+    with HTTP 400 "Invalid Auth key", while the native endpoint accepts both formats
+    via the x-goog-api-key header. The key is sent ONLY in that header (never in the
+    URL, so it cannot leak into httpx/uvicorn request logs)."""
+
+    def __init__(self, cfg: ProviderConfig, api_key: str, client: Optional[httpx.Client] = None):
+        # Accept an old override that still points at the compatibility layer.
+        if cfg.base_url.endswith("/openai"):
+            cfg.base_url = cfg.base_url[: -len("/openai")]
+        # Tolerate keys pasted with surrounding quotes in the env file.
+        api_key = (api_key or "").strip().strip('"').strip("'").strip()
+        super().__init__(cfg, api_key, client=client)
+
+    def _headers(self):
+        h = {"x-goog-api-key": self._key, "Content-Type": "application/json"}
+        h.update(self.cfg.extra_headers)
+        return h
+
+    @staticmethod
+    def _to_gemini(messages: List[Dict[str, str]]):
+        system_parts, contents = [], []
+        for m in messages:
+            role, text = m.get("role", "user"), m.get("content") or ""
+            if role == "system":
+                system_parts.append({"text": text})
+                continue
+            g_role = "model" if role == "assistant" else "user"
+            if contents and contents[-1]["role"] == g_role:
+                contents[-1]["parts"].append({"text": text})  # Gemini wants alternating roles
+            else:
+                contents.append({"role": g_role, "parts": [{"text": text}]})
+        return system_parts, contents
+
+    def chat(self, messages: List[Dict[str, str]], json_mode: bool = False, timeout: float = 30.0, max_tokens: int = 1200) -> ChatResult:
+        system_parts, contents = self._to_gemini(messages)
+        gen = {"temperature": 0.2, "maxOutputTokens": max_tokens}
+        if json_mode and self.cfg.json_mode:
+            gen["responseMimeType"] = "application/json"
+        if "2.5-flash" in self.cfg.model:
+            # Thinking tokens count against maxOutputTokens and can leave the answer empty.
+            gen["thinkingConfig"] = {"thinkingBudget": 0}
+        body = {"contents": contents, "generationConfig": gen}
+        if system_parts:
+            body["systemInstruction"] = {"parts": system_parts}
+        url = f"{self.cfg.base_url}/models/{self.cfg.model}:generateContent"
+        try:
+            client = self._client or httpx.Client(timeout=timeout)
+            try:
+                resp = client.post(url, json=body, headers=self._headers(), timeout=timeout)
+            finally:
+                if self._client is None:
+                    client.close()
+        except httpx.TimeoutException:
+            raise Transient(f"{self.name}: request timed out after {timeout:.0f}s")
+        except httpx.HTTPError as e:
+            raise Transient(f"{self.name}: network error: {type(e).__name__}")
+        return self._parse(resp)
+
+    def _parse(self, resp: httpx.Response) -> ChatResult:
+        code = resp.status_code
+        if code == 400:
+            low = resp.text[:2000].lower()
+            if any(s in low for s in ("api_key_invalid", "api key not valid", "invalid auth key", "api key expired")):
+                raise AuthFailed(f"{self.name}: API key rejected by Google (HTTP 400) - create a new key in AI Studio")
+        if code >= 400:
+            return super()._parse(resp)  # shared 402/429/401/403/5xx/4xx mapping
+        try:
+            data = resp.json()
+        except ValueError:
+            raise BadResponse(f"{self.name}: unexpected response format")
+        cands = data.get("candidates") or []
+        if not cands:
+            reason = (data.get("promptFeedback") or {}).get("blockReason", "no candidates")
+            raise BadResponse(f"{self.name}: empty response ({reason})")
+        parts = (cands[0].get("content") or {}).get("parts") or []
+        text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
+        if not text.strip():
+            raise BadResponse(f"{self.name}: empty response (finishReason={cands[0].get('finishReason')})")
+        usage = data.get("usageMetadata") or {}
+        return ChatResult(
+            text=text.strip(),
+            provider=self.name,
+            model=data.get("modelVersion") or self.cfg.model,
+            prompt_tokens=int(usage.get("promptTokenCount") or 0),
+            completion_tokens=int(usage.get("candidatesTokenCount") or 0),
+        )
+
+
+ADAPTERS = {"openrouter": OpenRouterProvider, "gemini": GeminiProvider}
 
 
 def build_provider(name: str, env=os.environ, client: Optional[httpx.Client] = None):

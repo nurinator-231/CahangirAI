@@ -16,6 +16,12 @@ def ok_body(text="hello", model="m"):
     return {"model": model, "choices": [{"message": {"content": text}}], "usage": {"prompt_tokens": 3, "completion_tokens": 2}}
 
 
+def gemini_body(text="hello"):
+    """Native Gemini generateContent response."""
+    return {"candidates": [{"content": {"role": "model", "parts": [{"text": text}]}, "finishReason": "STOP"}],
+            "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 2}, "modelVersion": "gemini-2.5-flash"}
+
+
 class Recorder:
     def __init__(self, behaviours):
         self.behaviours = behaviours  # host -> list of responses (callables or Response)
@@ -68,7 +74,7 @@ def test_fallback_on_rate_limit_then_cooldown():
     env = dict(KEYS, CAHANGIR_AI_PROVIDERS="groq,gemini")
     r, rec = make_router(env, {
         "api.groq.com": [httpx.Response(429, headers={"retry-after": "30"}, json={"error": {"message": "Rate limit reached for requests per minute"}})],
-        "generativelanguage.googleapis.com": [httpx.Response(200, json=ok_body("from gemini"))],
+        "generativelanguage.googleapis.com": [httpx.Response(200, json=gemini_body("from gemini"))],
     })
     res = r.complete("chat", MSG)
     assert res.provider == "gemini" and res.text == "from gemini"
@@ -110,7 +116,7 @@ def test_timeout_falls_back():
     env = dict(KEYS, CAHANGIR_AI_PROVIDERS="groq,gemini")
     r, _ = make_router(env, {
         "api.groq.com": [httpx.ReadTimeout("t"), httpx.ReadTimeout("t")],
-        "generativelanguage.googleapis.com": [httpx.Response(200, json=ok_body())],
+        "generativelanguage.googleapis.com": [httpx.Response(200, json=gemini_body())],
     })
     assert r.complete("chat", MSG).provider == "gemini"
 
@@ -200,3 +206,33 @@ def test_parse_endpoint_with_mock_provider(client, make_device):
     assert rec.calls[0][1]["response_format"] == {"type": "json_object"}
     st = client.get("/api/ai/providers", headers=h).json()
     assert all("k1" not in json.dumps(p) for p in st["providers"])  # keys never exposed
+
+
+def test_gemini_uses_native_endpoint_with_auth_key_header():
+    seen = []
+
+    def handler(request: httpx.Request):
+        seen.append(request)
+        return httpx.Response(200, json=gemini_body("salam"))
+
+    from app.ai.providers import build_provider
+    env = {"GEMINI_API_KEY": '"AQ.Ab8RN6test"'}  # quoted value must be tolerated
+    p = build_provider("gemini", env, client=httpx.Client(transport=httpx.MockTransport(handler)))
+    res = p.chat([{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}], json_mode=True)
+    assert res.text == "salam" and res.provider == "gemini"
+    req = seen[0]
+    assert req.url.path == "/v1beta/models/gemini-2.5-flash:generateContent"
+    assert req.headers["x-goog-api-key"] == "AQ.Ab8RN6test"
+    assert "authorization" not in req.headers and "key=" not in str(req.url)
+    body = json.loads(req.content)
+    assert body["systemInstruction"]["parts"][0]["text"] == "sys"
+    assert body["contents"] == [{"role": "user", "parts": [{"text": "hi"}]}]
+    assert body["generationConfig"]["responseMimeType"] == "application/json"
+
+
+def test_gemini_invalid_key_is_auth_failure():
+    from app.ai.providers import AuthFailed, build_provider
+    bad = httpx.Response(400, json={"error": {"code": 400, "message": "Invalid Auth key.", "status": "INVALID_ARGUMENT"}})
+    p = build_provider("gemini", {"GEMINI_API_KEY": "x"}, client=httpx.Client(transport=httpx.MockTransport(lambda r: bad)))
+    with pytest.raises(AuthFailed):
+        p.chat(MSG)
